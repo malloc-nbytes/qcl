@@ -1,4 +1,1 @@
-+
-VAR2-foo-bar
-# this is a comment
-var3 __another-var
+VAR2_foo-bar = "hello"

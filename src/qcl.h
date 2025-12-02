@@ -293,17 +293,21 @@ _qcl_symmap_cmp(const char **s0,
         return strcmp(*s0, *s1);
 }
 
-static qcl_tt
+static size_t
 _qcl_determine_sym(const char *st,
                    size_t      len,
+                   qcl_tt     *ty,
                    symmap     *map)
 {
+        *ty = QCL_TT_NONE;
+
         char buf[256] = {0};
         (void)strncpy(buf, st, len);
 
         for (int i = len-1; i >= 0; --i) {
                 if (symmap_contains(map, buf)) {
-                        return *symmap_get(map, buf);
+                        *ty = *symmap_get(map, buf);
+                        return (size_t)i+1;
                 }
 
                 buf[i] = 0;
@@ -317,7 +321,7 @@ _qcl_lex_file(const char *fp,
               const char *src)
 {
         symmap symmap = symmap_create(_qcl_symmap_hash, _qcl_symmap_cmp);
-        symmap_insert(&symmap, "+", QCL_TT_PLUS);
+        symmap_insert(&symmap, "=", QCL_TT_PLUS);
 
         qcl_lexer lexer = {
                 .hd = NULL,
@@ -367,11 +371,16 @@ _qcl_lex_file(const char *fp,
                         _qcl_lexer_append(&lexer, t);
                         i += len+2, c += len+2;
                 } else {
-                        size_t len = _qcl_consume_while(src+i, _qcl_issym);
-                        qcl_tt ty = _qcl_determine_sym(src+i, len, &symmap);
+                        // TODO: <single> + <multi> (no spaces does not work)
+                        //       ie: +||
+
+                        size_t len     = _qcl_consume_while(src+i, _qcl_issym);
+                        size_t old_len = len;
+                        qcl_tt ty      = QCL_TT_NONE;
+                        len            = _qcl_determine_sym(src+i, len, &ty, &symmap);
                         if (ty == QCL_TT_NONE) {
                                 char buf[256] = {0};
-                                strncpy(buf, src+i, len);
+                                strncpy(buf, src+i, old_len);
                                 printf("error: unknown symbol: %s\n", buf);
                                 exit(1);
                         }
@@ -404,6 +413,67 @@ _qcl_load_file(const char *path)
         fclose(f);
 
         return buf;
+}
+
+typedef enum {
+        QCL_TYPE_STRING = 0,
+} qcl_type_kind;
+
+typedef struct {
+        qcl_type_kind kind;
+} qcl_type;
+
+typedef struct {
+        qcl_type base;
+} qcl_type_string;
+
+// ########################
+// # EXPRESSIONS          #
+// ########################
+
+typedef enum {
+        QCL_EXPR_KIND_IDENTIFIER,
+        QCL_EXPR_KIND_STRING,
+        QCL_EXPR_KIND_IF,
+} qcl_expr_kind;
+
+typedef struct {
+        qcl_expr_kind  kind;
+        qcl_type      *type;
+        qcl_loc        loc;
+} qcl_expr;
+
+// ########################
+// # STATEMENTS           #
+// ########################
+
+typedef enum {
+        QCL_STMT_KIND_ASSIGNMENT = 0,
+        QCL_STMT_KIND_EXPR,
+} qcl_stmt_kind;
+
+typedef struct {
+        qcl_stmt_kind kind;
+        qcl_loc       loc;
+} qcl_stmt;
+
+typedef struct {
+        qcl_stmt    base;
+        const char *id;
+        qcl_expr   *expr;
+} qcl_stmt_assignment;
+
+typedef struct {} qcl_config;
+
+static qcl_config
+qcl_parse_file(const char *fp)
+{
+        char *src = _qcl_load_file(fp);
+        assert(src);
+
+        qcl_lexer lexer = _qcl_lex_file(fp, src);
+
+        
 }
 
 #endif // QCL_IMPL
