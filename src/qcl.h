@@ -162,18 +162,42 @@
         (da).len--;                                          \
     } while (0)
 
+// ####################
+// # KEYWORDS         #
+// ####################
+#define QCL_KWD_NULL "null"
+#define QCL_KWD_IF   "if"
+#define QCL_KWD_CL {  \
+        QCL_KWD_NULL, \
+        QCL_KWD_IF,   \
+        NULL,         \
+}
+
+static int
+_qcl_is_kw(const char *s)
+{
+        const char *kwds[] = QCL_KWD_CL;
+        for (size_t i = 0; kwds[i]; ++i) {
+                if (!strcmp(s, kwds[i])) {
+                        return 1;
+                }
+        }
+        return 0;
+}
+
 typedef enum {
         QCL_TT_NONE = 0,
         QCL_TT_EOF,
         QCL_TT_IDENTIFIER,
+        QCL_TT_KEYWORD,
         QCL_TT_STRING,
         QCL_TT_DIGIT,
         QCL_TT_LPAREN,
         QCL_TT_RPAREN,
         QCL_TT_LCURLY,
         QCL_TT_RCURLY,
-        QCL_TT_LSQR,
-        QCL_TT_RSQR, // 10
+        QCL_TT_LSQR, // 10
+        QCL_TT_RSQR,
         QCL_TT_EQUALS,
         QCL_TT_COMMA,
         QCL_TT_NEWLINE,
@@ -184,26 +208,26 @@ typedef enum {
 typedef struct {
         size_t r, c;
         const char *fp;
-} qcl_loc;
+} _qcl_loc;
 
-typedef struct qcl_token {
+typedef struct _qcl_token {
         char *lx;
         qcl_tt ty;
-        qcl_loc loc;
-        struct qcl_token *n;
-} qcl_token;
+        _qcl_loc loc;
+        struct _qcl_token *n;
+} _qcl_token;
 
 typedef struct {
-        qcl_token *hd;
-        qcl_token *tl;
+        _qcl_token *hd;
+        _qcl_token *tl;
         const char *fp;
         struct {
                 const char *msg;
-                qcl_loc loc;
+                _qcl_loc loc;
         } err;
-} qcl_lexer;
+} _qcl_lexer;
 
-static qcl_token *
+static _qcl_token *
 _qcl_token_alloc(const char *st,
                  size_t      st_n,
                  qcl_tt      ty,
@@ -211,7 +235,7 @@ _qcl_token_alloc(const char *st,
                  size_t      c,
                  const char *fp)
 {
-        qcl_token *t = (qcl_token *)malloc(sizeof(qcl_token));
+        _qcl_token *t = (_qcl_token *)malloc(sizeof(_qcl_token));
         t->lx        = strndup(st, st_n);
         t->ty        = ty;
         t->loc.r     = r;
@@ -221,7 +245,7 @@ _qcl_token_alloc(const char *st,
 }
 
 static void
-_qcl_lexer_append(qcl_lexer *l, qcl_token *t)
+_qcl_lexer_append(_qcl_lexer *l, _qcl_token *t)
 {
         if (!l->hd && !l->tl) {
                 l->hd = l->tl = t;
@@ -258,10 +282,21 @@ _qcl_issym(int c)
                 && c != '\t';
 }
 
-static void
-_qcl_lexer_dump(const qcl_lexer *l)
+static _qcl_token *
+_qcl_lexer_peek(const _qcl_lexer *l,
+                size_t            p)
 {
-        qcl_token *it = l->hd;
+        _qcl_token *it = l->hd;
+        for (size_t i = 0; it && i < p; ++i) {
+                it = it->n;
+        }
+        return it;
+}
+
+static void
+_qcl_lexer_dump(const _qcl_lexer *l)
+{
+        _qcl_token *it = l->hd;
         while (it) {
                 printf("{ lx=%s, ty=%d, r=%zu, c=%zu, fp=%s }\n",
                        it->lx, it->ty, it->loc.r, it->loc.c, it->loc.fp);
@@ -316,14 +351,14 @@ _qcl_determine_sym(const char *st,
         return QCL_TT_NONE;
 }
 
-static qcl_lexer
+static _qcl_lexer
 _qcl_lex_file(const char *fp,
               const char *src)
 {
         symmap symmap = symmap_create(_qcl_symmap_hash, _qcl_symmap_cmp);
         symmap_insert(&symmap, "=", QCL_TT_PLUS);
 
-        qcl_lexer lexer = {
+        _qcl_lexer lexer = {
                 .hd = NULL,
                 .tl = NULL,
                 .fp = fp,
@@ -336,9 +371,9 @@ _qcl_lex_file(const char *fp,
                 if (ch == ' ' || ch == '\t') {
                         ++i, ++c;
                 } else if (ch == '\n' || ch == '\r') {
-                        qcl_token *t = _qcl_token_alloc("\n", 1,
-                                                        QCL_TT_NEWLINE,
-                                                        r, c, lexer.fp);
+                        _qcl_token *t = _qcl_token_alloc("\n", 1,
+                                                         QCL_TT_NEWLINE,
+                                                         r, c, lexer.fp);
                         _qcl_lexer_append(&lexer, t);
                         ++i, ++r, c = 1;
                 } else if (ch == '#') {
@@ -346,16 +381,19 @@ _qcl_lex_file(const char *fp,
                         ++i, ++r, c = 0;
                 } else if (isalpha(ch) || ch == '_' || ch == '-') {
                         size_t len = _qcl_consume_while(src+i, _qcl_isident);
-                        qcl_token *t = _qcl_token_alloc(src+i, len,
-                                                        QCL_TT_IDENTIFIER,
-                                                        r, c, lexer.fp);
+                        _qcl_token *t = _qcl_token_alloc(src+i, len,
+                                                         QCL_TT_IDENTIFIER,
+                                                         r, c, lexer.fp);
+                        if (_qcl_is_kw(t->lx)) {
+                                t->ty = QCL_TT_KEYWORD;
+                        }
                         _qcl_lexer_append(&lexer, t);
                         i += len, c += len;
                 } else if (isdigit(ch)) {
                         size_t len = _qcl_consume_while(src+i, isdigit);
-                        qcl_token *t = _qcl_token_alloc(src+i, len,
-                                                        QCL_TT_DIGIT,
-                                                        r, c, lexer.fp);
+                        _qcl_token *t = _qcl_token_alloc(src+i, len,
+                                                         QCL_TT_DIGIT,
+                                                         r, c, lexer.fp);
                         _qcl_lexer_append(&lexer, t);
                         i += len, c += len;
                 } else if (ch == '"' || ch == '\'') {
@@ -365,9 +403,9 @@ _qcl_lex_file(const char *fp,
                         } else {
                                 len = _qcl_consume_while(src+i, _qcl_notsinglequote);
                         }
-                        qcl_token *t = _qcl_token_alloc(src+i+1, len,
-                                                        QCL_TT_STRING,
-                                                        r, c, lexer.fp);
+                        _qcl_token *t = _qcl_token_alloc(src+i+1, len,
+                                                         QCL_TT_STRING,
+                                                         r, c, lexer.fp);
                         _qcl_lexer_append(&lexer, t);
                         i += len+2, c += len+2;
                 } else {
@@ -384,12 +422,15 @@ _qcl_lex_file(const char *fp,
                                 printf("error: unknown symbol: %s\n", buf);
                                 exit(1);
                         }
-                        qcl_token *t = _qcl_token_alloc(src+i, len,
-                                                        ty, r, c, lexer.fp);
+                        _qcl_token *t = _qcl_token_alloc(src+i, len,
+                                                         ty, r, c, lexer.fp);
                         _qcl_lexer_append(&lexer, t);
                         i += len, c += len;
                 }
         }
+
+        _qcl_token *t = _qcl_token_alloc("EOF", 3, QCL_TT_EOF, r, c, lexer.fp);
+        _qcl_lexer_append(&lexer, t);
 
         return lexer;
 }
@@ -417,15 +458,15 @@ _qcl_load_file(const char *path)
 
 typedef enum {
         QCL_TYPE_STRING = 0,
-} qcl_type_kind;
+} _qcl_type_kind;
 
 typedef struct {
-        qcl_type_kind kind;
-} qcl_type;
+        _qcl_type_kind kind;
+} _qcl_type;
 
 typedef struct {
-        qcl_type base;
-} qcl_type_string;
+        _qcl_type base;
+} _qcl_type_string;
 
 // ########################
 // # EXPRESSIONS          #
@@ -435,13 +476,18 @@ typedef enum {
         QCL_EXPR_KIND_IDENTIFIER,
         QCL_EXPR_KIND_STRING,
         QCL_EXPR_KIND_IF,
-} qcl_expr_kind;
+} _qcl_expr_kind;
 
 typedef struct {
-        qcl_expr_kind  kind;
-        qcl_type      *type;
-        qcl_loc        loc;
-} qcl_expr;
+        _qcl_expr_kind  kind;
+        _qcl_type      *type;
+        _qcl_loc        loc;
+} _qcl_expr;
+
+typedef struct {
+        _qcl_expr    base;
+        const char  *s;
+} _qcl_expr_string;
 
 // ########################
 // # STATEMENTS           #
@@ -450,18 +496,54 @@ typedef struct {
 typedef enum {
         QCL_STMT_KIND_ASSIGNMENT = 0,
         QCL_STMT_KIND_EXPR,
-} qcl_stmt_kind;
+} _qcl_stmt_kind;
 
 typedef struct {
-        qcl_stmt_kind kind;
-        qcl_loc       loc;
-} qcl_stmt;
+        _qcl_stmt_kind kind;
+        _qcl_loc       loc;
+} _qcl_stmt;
 
 typedef struct {
-        qcl_stmt    base;
+        _qcl_stmt    base;
         const char *id;
-        qcl_expr   *expr;
-} qcl_stmt_assignment;
+        _qcl_expr   *expr;
+} _qcl_stmt_assignment;
+
+QCL_ARRAY_TYPE(_qcl_stmt *, _qcl_stmt_array);
+
+typedef struct {
+        _qcl_stmt_array stmts;
+} _qcl_program;
+
+#define _QCL_SP(l, i) \
+        _qcl_lexer_peek(l, i) && _qcl_lexer_peek(l, i)
+
+static _qcl_stmt *
+_qcl_parse_stmt(const _qcl_lexer *lexer)
+{
+        assert(0);
+}
+
+static _qcl_program
+_qcl_create_program(const _qcl_lexer *lexer)
+{
+        _qcl_program prog = (_qcl_program) {
+                .stmts = qcl_array_empty(_qcl_stmt_array),
+        };
+
+        while (_QCL_SP(lexer, 0)->ty != QCL_TT_EOF) {
+                _qcl_stmt *stmt = _qcl_parse_stmt(lexer);
+                if (!stmt) break;
+                qcl_array_append(prog.stmts, stmt);
+        }
+
+        return prog;
+}
+
+
+
+
+
 
 typedef struct {} qcl_config;
 
@@ -471,9 +553,9 @@ qcl_parse_file(const char *fp)
         char *src = _qcl_load_file(fp);
         assert(src);
 
-        qcl_lexer lexer = _qcl_lex_file(fp, src);
+        _qcl_lexer lexer = _qcl_lex_file(fp, src);
 
-        
+        assert(0);
 }
 
 #endif // QCL_IMPL
