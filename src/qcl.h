@@ -293,6 +293,15 @@ _qcl_lexer_peek(const _qcl_lexer *l,
         return it;
 }
 
+static _qcl_token *
+_qcl_lexer_next(_qcl_lexer *l)
+{
+        if (!l->hd) return NULL;
+        _qcl_token *t = l->hd;
+        l->hd = l->hd->n;
+        return t;
+}
+
 static void
 _qcl_lexer_dump(const _qcl_lexer *l)
 {
@@ -356,7 +365,7 @@ _qcl_lex_file(const char *fp,
               const char *src)
 {
         symmap symmap = symmap_create(_qcl_symmap_hash, _qcl_symmap_cmp);
-        symmap_insert(&symmap, "=", QCL_TT_PLUS);
+        symmap_insert(&symmap, "=", QCL_TT_EQUALS);
 
         _qcl_lexer lexer = {
                 .hd = NULL,
@@ -514,6 +523,25 @@ typedef struct {
         _qcl_expr *expr;
 } _qcl_stmt_expr;
 
+static _qcl_stmt_assignment *
+_qcl_stmt_assignment_alloc(const char *id,
+                           _qcl_expr  *expr)
+{
+        _qcl_stmt_assignment *s =
+                (_qcl_stmt_assignment *)malloc(sizeof(_qcl_stmt_assignment));
+        s->id   = id;
+        s->expr = expr;
+        s->base = (_qcl_stmt) {
+                .kind = QCL_STMT_KIND_ASSIGNMENT,
+                .loc  = {0},
+        };
+        return s;
+}
+
+// #####################
+// # PARSING           #
+// #####################
+
 QCL_ARRAY_TYPE(_qcl_stmt *, _qcl_stmt_array);
 
 typedef struct {
@@ -523,10 +551,36 @@ typedef struct {
 #define _QCL_SP(l, i) \
         _qcl_lexer_peek(l, i) && _qcl_lexer_peek(l, i)
 
-static _qcl_stmt_assignment *
-_qcl_parse_stmt_assignment(const _qcl_lexer *lexer)
+static _qcl_token *
+_qcl_expect(_qcl_lexer *lexer,
+            qcl_tt      ty)
+{
+        _qcl_token *it = _qcl_lexer_next(lexer);
+        if (!it || it->ty != ty) return NULL;
+        return it;
+}
+
+static _qcl_expr *
+_qcl_parse_expr(_qcl_lexer *lexer)
 {
         assert(0);
+}
+
+static _qcl_stmt_assignment *
+_qcl_parse_stmt_assignment(_qcl_lexer *lexer)
+{
+        const char *id;
+        _qcl_expr  *expr;
+
+        if (!(id = _qcl_expect(lexer, QCL_TT_IDENTIFIER)->lx)) {
+                return NULL;
+        }
+
+        if (!(expr = _qcl_parse_expr(lexer))) {
+                return NULL;
+        }
+
+        return _qcl_stmt_assignment_alloc(id, expr);
 }
 
 static _qcl_stmt_expr *
@@ -542,7 +596,7 @@ _qcl_parse_stmt_keyword(const _qcl_lexer *lexer)
 }
 
 static _qcl_stmt *
-_qcl_parse_stmt(const _qcl_lexer *lexer)
+_qcl_parse_stmt(_qcl_lexer *lexer)
 {
         _qcl_token *hd = _qcl_lexer_peek(lexer, 0);
         if (hd->ty == QCL_TT_KEYWORD) {
@@ -556,7 +610,7 @@ _qcl_parse_stmt(const _qcl_lexer *lexer)
 }
 
 static _qcl_program
-_qcl_create_program(const _qcl_lexer *lexer)
+_qcl_create_program(_qcl_lexer *lexer)
 {
         _qcl_program prog = (_qcl_program) {
                 .stmts = qcl_array_empty(_qcl_stmt_array),
@@ -581,7 +635,7 @@ qcl_parse_file(const char *fp)
 
         _qcl_lexer lexer = _qcl_lex_file(fp, src);
 
-        assert(0);
+        _qcl_program prog = _qcl_create_program(&lexer);
 }
 
 #endif // QCL_IMPL
