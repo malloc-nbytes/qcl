@@ -509,6 +509,11 @@ typedef struct {
         _qcl_expr   *expr;
 } _qcl_stmt_assignment;
 
+typedef struct {
+        _qcl_stmt  base;
+        _qcl_expr *expr;
+} _qcl_stmt_expr;
+
 QCL_ARRAY_TYPE(_qcl_stmt *, _qcl_stmt_array);
 
 typedef struct {
@@ -518,10 +523,36 @@ typedef struct {
 #define _QCL_SP(l, i) \
         _qcl_lexer_peek(l, i) && _qcl_lexer_peek(l, i)
 
+static _qcl_stmt_assignment *
+_qcl_parse_stmt_assignment(const _qcl_lexer *lexer)
+{
+        assert(0);
+}
+
+static _qcl_stmt_expr *
+_qcl_parse_stmt_expr(const _qcl_lexer *lexer)
+{
+        assert(0);
+}
+
+static _qcl_stmt *
+_qcl_parse_stmt_keyword(const _qcl_lexer *lexer)
+{
+        assert(0);
+}
+
 static _qcl_stmt *
 _qcl_parse_stmt(const _qcl_lexer *lexer)
 {
-        assert(0);
+        _qcl_token *hd = _qcl_lexer_peek(lexer, 0);
+        if (hd->ty == QCL_TT_KEYWORD) {
+                return _qcl_parse_stmt_keyword(lexer);
+        } else if (hd->ty == QCL_TT_IDENTIFIER
+                   && _QCL_SP(lexer, 1)->ty == QCL_TT_EQUALS) {
+                return (_qcl_stmt *)_qcl_parse_stmt_assignment(lexer);
+        } else {
+                return (_qcl_stmt *)_qcl_parse_stmt_expr(lexer);
+        }
 }
 
 static _qcl_program
@@ -539,11 +570,6 @@ _qcl_create_program(const _qcl_lexer *lexer)
 
         return prog;
 }
-
-
-
-
-
 
 typedef struct {} qcl_config;
 
