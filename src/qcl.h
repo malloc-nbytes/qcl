@@ -582,7 +582,7 @@ _qcl_load_file(const char *path)
         fread(buf, 1, size, f);
         fclose(f);
 
-        buf[size-1] = 0;
+        buf[size] = '\0';
 
         return buf;
 }
@@ -596,6 +596,7 @@ typedef struct _qcl_stmt _qcl_stmt;
 
 typedef struct _qcl_visitor _qcl_visitor;
 static void *_qcl_accept_expr_string(_qcl_expr *e, _qcl_visitor *v);
+static void *_qcl_accept_expr_identifier(_qcl_expr *e, _qcl_visitor *v);
 static void *_qcl_accept_stmt_assigment(_qcl_stmt *s, _qcl_visitor *v);
 
 typedef enum {
@@ -661,7 +662,7 @@ _qcl_expr_identifier_alloc(const char *id)
                 .kind = _QCL_EXPR_KIND_IDENTIFIER,
                 .loc  = {0},
         };
-        e->base.accept = NULL;
+        e->base.accept = _qcl_accept_expr_identifier;
         return e;
 }
 
@@ -825,6 +826,10 @@ _qcl_create_program(_qcl_lexer *lexer)
         };
 
         while (_QCL_SP(lexer, 0)->ty != _QCL_TT_EOF) {
+                if (lexer->hd->ty == _QCL_TT_NEWLINE) {
+                        _qcl_lexer_next(lexer);
+                        continue;
+                }
                 _qcl_stmt *stmt = _qcl_parse_stmt(lexer);
                 if (!stmt) break;
                 qcl_array_append(prog.stmts, stmt);
@@ -837,14 +842,16 @@ _qcl_create_program(_qcl_lexer *lexer)
 // # VISITOR            #
 // ######################
 
-typedef void *(*_qcl_visit_stmt_assignment_sig)(_qcl_visitor *v, _qcl_stmt_assignment *s);
 typedef void *(*_qcl_visit_expr_string_sig)(_qcl_visitor *v, _qcl_expr_string *s);
+typedef void *(*_qcl_visit_expr_identifier_sig)(_qcl_visitor *v, _qcl_expr_identifier *s);
+typedef void *(*_qcl_visit_stmt_assignment_sig)(_qcl_visitor *v, _qcl_stmt_assignment *s);
 
 typedef struct _qcl_visitor {
         void *context;
 
         // Expressions
-        _qcl_visit_expr_string_sig visit_expr_string;
+        _qcl_visit_expr_string_sig     visit_expr_string;
+        _qcl_visit_expr_identifier_sig visit_expr_identifier;
 
         // Statements
         _qcl_visit_stmt_assignment_sig visit_stmt_assignment;
@@ -853,6 +860,7 @@ typedef struct _qcl_visitor {
 static _qcl_visitor *
 _qcl_visitor_alloc(void                           *context,
                    _qcl_visit_expr_string_sig      visit_expr_string,
+                   _qcl_visit_expr_identifier_sig  visit_expr_identifier,
                    _qcl_visit_stmt_assignment_sig  visit_stmt_assignment)
 {
         _qcl_visitor *v = (_qcl_visitor *)malloc(sizeof(_qcl_visitor));
@@ -860,6 +868,7 @@ _qcl_visitor_alloc(void                           *context,
         v->context = context;
 
         v->visit_stmt_assignment = visit_stmt_assignment;
+        v->visit_expr_identifier = visit_expr_identifier;
         v->visit_expr_string     = visit_expr_string;
 
         return v ;
@@ -870,6 +879,16 @@ _qcl_accept_expr_string(_qcl_expr *e, _qcl_visitor *v)
 {
         if (v->visit_expr_string) {
                 return v->visit_expr_string(v, (_qcl_expr_string *)e);
+        }
+        return NULL;
+}
+
+static void *
+_qcl_accept_expr_identifier(_qcl_expr    *e,
+                            _qcl_visitor *v)
+{
+        if (v->visit_expr_identifier) {
+                return v->visit_expr_identifier(v, (_qcl_expr_identifier *)e);
         }
         return NULL;
 }
@@ -900,6 +919,14 @@ typedef struct {
         const char *s;
 } qcl_value_string;
 
+static qcl_value_string *
+qcl_value_string_alloc(const char *s)
+{
+        qcl_value_string *v = (qcl_value_string *)malloc(sizeof(qcl_value_string));
+        v->s = s;
+        v->base.kind = QCL_VALUE_KIND_STRING;
+}
+
 QCL_MAP_TYPE(const char *, qcl_value *, symtbl);
 
 static unsigned
@@ -912,7 +939,7 @@ static int
 symtbl_cmp(const char **sym0,
            const char **sym1)
 {
-        assert(0);
+        return strcmp(*sym0, *sym1);
 }
 
 typedef struct {
@@ -926,6 +953,9 @@ _qcl_interpret_visit_stmt_assignment(_qcl_visitor         *v,
         _qcl_interpret_context *ctx = (_qcl_interpret_context *)v->context;
         qcl_value *value = (qcl_value *)s->expr->accept(s->expr, v);
         symtbl_insert(&ctx->tbl, s->id, value);
+
+        printf("%s = %s\n", s->id, ((qcl_value_string *)value)->s);
+
         return NULL;
 }
 
@@ -933,7 +963,26 @@ static void *
 _qcl_interpret_visit_expr_string(_qcl_visitor     *v,
                                  _qcl_expr_string *e)
 {
-        assert(0);
+        (void)v;
+        return qcl_value_string_alloc(e->s);
+}
+
+static void *
+_qcl_interpret_visit_expr_identifier(_qcl_visitor         *v,
+                                     _qcl_expr_identifier *e)
+{
+        _qcl_interpret_context *ctx = (_qcl_interpret_context *)v->context;
+
+        if (!symtbl_contains(&ctx->tbl, e->id)) {
+                // TODO: set error flag
+                fprintf(stderr, "variable %s is not declared\n", e->id);
+                exit(1);
+        }
+
+        qcl_value *value = *(qcl_value **)symtbl_get(&ctx->tbl, e->id);
+        assert(value);
+
+        return value;
 }
 
 static _qcl_visitor *
@@ -941,6 +990,7 @@ _interpreter_visitor_alloc(_qcl_interpret_context *ctx)
 {
         return _qcl_visitor_alloc((void *)ctx,
                                   _qcl_interpret_visit_expr_string,
+                                  _qcl_interpret_visit_expr_identifier,
                                   _qcl_interpret_visit_stmt_assignment);
 }
 
