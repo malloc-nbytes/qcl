@@ -192,11 +192,11 @@
 // # ARENA            #
 // ####################
 
-#define _QCL_ARENA_DEFAULT_ALLOC_SIZE 4096
-#ifndef _QCL_ARENA_ALIGN_SIZE
-#define _QCL_ARENA_ALIGN_SIZE 16
+#define QCL_ARENA_DEFAULT_ALLOC_SIZE 4096
+#ifndef QCL_ARENA_ALIGN_SIZE
+#define QCL_ARENA_ALIGN_SIZE 16
 #endif
-#define _QCL_ARENA_ALIGN_MASK (_QCL_ARENA_ALIGN_SIZE-1)
+#define _QCL_ARENA_ALIGN_MASK (QCL_ARENA_ALIGN_SIZE-1)
 
 typedef struct {
         uint8_t *buf;
@@ -485,7 +485,7 @@ _qcl_lex_file(const char *fp,
                 .tarena = {0},
         };
 
-        _qcl_arena_init(&lexer.tarena, _QCL_ARENA_DEFAULT_ALLOC_SIZE * sizeof(_qcl_token));
+        _qcl_arena_init(&lexer.tarena, QCL_ARENA_DEFAULT_ALLOC_SIZE * sizeof(_qcl_token));
         symmap_insert(&symmap, "=", _QCL_TT_EQUALS);
 
         size_t r = 1, c = 1, i = 0;
@@ -587,8 +587,19 @@ _qcl_load_file(const char *path)
         return buf;
 }
 
+// ###############
+// # DECLARES    #
+// ###############
+
+typedef struct _qcl_expr _qcl_expr;
+typedef struct _qcl_stmt _qcl_stmt;
+
+typedef struct _qcl_visitor _qcl_visitor;
+static void *_qcl_accept_expr_string(_qcl_expr *e, _qcl_visitor *v);
+static void *_qcl_accept_stmt_assigment(_qcl_stmt *s, _qcl_visitor *v);
+
 typedef enum {
-        QCL_TYPE_STRING = 0,
+        _QCL_TYPE_STRING = 0,
 } _qcl_type_kind;
 
 typedef struct {
@@ -604,21 +615,55 @@ typedef struct {
 // ########################
 
 typedef enum {
-        QCL_EXPR_KIND_IDENTIFIER,
-        QCL_EXPR_KIND_STRING,
-        QCL_EXPR_KIND_IF,
+        _QCL_EXPR_KIND_IDENTIFIER,
+        _QCL_EXPR_KIND_STRING,
+        _QCL_EXPR_KIND_IF,
 } _qcl_expr_kind;
 
-typedef struct {
+typedef struct _qcl_expr {
         _qcl_expr_kind  kind;
         _qcl_type      *type;
         _qcl_loc        loc;
+        void *(*accept)(struct _qcl_expr *e, _qcl_visitor *v);
 } _qcl_expr;
 
 typedef struct {
         _qcl_expr    base;
         const char  *s;
 } _qcl_expr_string;
+
+typedef struct {
+        _qcl_expr    base;
+        const char  *id;
+} _qcl_expr_identifier;
+
+static _qcl_expr_string *
+_qcl_expr_string_alloc(const char *s)
+{
+        _qcl_expr_string *expr =
+                (_qcl_expr_string *)malloc(sizeof(_qcl_expr_string));
+        expr->s = s;
+        expr->base = (_qcl_expr) {
+                .kind = _QCL_EXPR_KIND_STRING,
+                .loc  = {0},
+        };
+        expr->base.accept = _qcl_accept_expr_string;
+        return expr;
+}
+
+static _qcl_expr_identifier *
+_qcl_expr_identifier_alloc(const char *id)
+{
+        _qcl_expr_identifier *e =
+                (_qcl_expr_identifier *)malloc(sizeof(_qcl_expr_identifier));
+        e->id = id;
+        e->base = (_qcl_expr) {
+                .kind = _QCL_EXPR_KIND_IDENTIFIER,
+                .loc  = {0},
+        };
+        e->base.accept = NULL;
+        return e;
+}
 
 // ########################
 // # STATEMENTS           #
@@ -629,9 +674,10 @@ typedef enum {
         QCL_STMT_KIND_EXPR,
 } _qcl_stmt_kind;
 
-typedef struct {
+typedef struct _qcl_stmt {
         _qcl_stmt_kind kind;
         _qcl_loc       loc;
+        void *(*accept)(struct _qcl_stmt *s, _qcl_visitor *v);
 } _qcl_stmt;
 
 typedef struct {
@@ -657,6 +703,7 @@ _qcl_stmt_assignment_alloc(const char *id,
                 .kind = QCL_STMT_KIND_ASSIGNMENT,
                 .loc  = {0},
         };
+        s->base.accept = _qcl_accept_stmt_assigment;
         return s;
 }
 
@@ -683,9 +730,41 @@ _qcl_expect(_qcl_lexer *lexer,
 }
 
 static _qcl_expr *
+_qcl_parse_primary_expr(_qcl_lexer *lexer)
+{
+        _qcl_expr *expr = NULL;
+
+        while (1) {
+                _qcl_token *hd = _qcl_lexer_peek(lexer, 0);
+                if (!hd) return expr;
+
+                switch (hd->ty) {
+                case _QCL_TT_IDENTIFIER: {
+                        expr = (_qcl_expr *)_qcl_expr_identifier_alloc(_qcl_lexer_next(lexer)->lx);
+                        expr->loc = hd->loc;
+                } break;
+                case _QCL_TT_STRING: {
+                        expr = (_qcl_expr *)_qcl_expr_string_alloc(_qcl_lexer_next(lexer)->lx);
+                        expr->loc = hd->loc;
+                } break;
+                default: return expr;
+                }
+        }
+
+        return NULL; // unreachable
+}
+
+static _qcl_expr *
+_qcl_parse_additive_expr(_qcl_lexer *lexer)
+{
+        // TODO
+        return _qcl_parse_primary_expr(lexer);
+}
+
+static _qcl_expr *
 _qcl_parse_expr(_qcl_lexer *lexer)
 {
-        assert(0);
+        return _qcl_parse_additive_expr(lexer);
 }
 
 static _qcl_stmt_assignment *
@@ -698,21 +777,25 @@ _qcl_parse_stmt_assignment(_qcl_lexer *lexer)
                 return NULL;
         }
 
+        (void)_qcl_expect(lexer, _QCL_TT_EQUALS);
+
         if (!(expr = _qcl_parse_expr(lexer))) {
                 return NULL;
         }
+
+        (void)_qcl_expect(lexer, _QCL_TT_NEWLINE);
 
         return _qcl_stmt_assignment_alloc(id, expr);
 }
 
 static _qcl_stmt_expr *
-_qcl_parse_stmt_expr(const _qcl_lexer *lexer)
+_qcl_parse_stmt_expr(_qcl_lexer *lexer)
 {
         assert(0);
 }
 
 static _qcl_stmt *
-_qcl_parse_stmt_keyword(const _qcl_lexer *lexer)
+_qcl_parse_stmt_keyword(_qcl_lexer *lexer)
 {
         assert(0);
 }
@@ -750,6 +833,131 @@ _qcl_create_program(_qcl_lexer *lexer)
         return prog;
 }
 
+// ######################
+// # VISITOR            #
+// ######################
+
+typedef void *(*_qcl_visit_stmt_assignment_sig)(_qcl_visitor *v, _qcl_stmt_assignment *s);
+typedef void *(*_qcl_visit_expr_string_sig)(_qcl_visitor *v, _qcl_expr_string *s);
+
+typedef struct _qcl_visitor {
+        void *context;
+
+        // Expressions
+        _qcl_visit_expr_string_sig visit_expr_string;
+
+        // Statements
+        _qcl_visit_stmt_assignment_sig visit_stmt_assignment;
+} _qcl_visitor;
+
+static _qcl_visitor *
+_qcl_visitor_alloc(void                           *context,
+                   _qcl_visit_expr_string_sig      visit_expr_string,
+                   _qcl_visit_stmt_assignment_sig  visit_stmt_assignment)
+{
+        _qcl_visitor *v = (_qcl_visitor *)malloc(sizeof(_qcl_visitor));
+
+        v->context = context;
+
+        v->visit_stmt_assignment = visit_stmt_assignment;
+        v->visit_expr_string     = visit_expr_string;
+
+        return v ;
+}
+
+static void *
+_qcl_accept_expr_string(_qcl_expr *e, _qcl_visitor *v)
+{
+        if (v->visit_expr_string) {
+                return v->visit_expr_string(v, (_qcl_expr_string *)e);
+        }
+        return NULL;
+}
+
+static void *
+_qcl_accept_stmt_assigment(_qcl_stmt *s, _qcl_visitor *v)
+{
+        if (v->visit_stmt_assignment) {
+                return v->visit_stmt_assignment(v, (_qcl_stmt_assignment *)s);
+        }
+        return NULL;
+}
+
+// ######################
+// # INTERPRETER        #
+// ######################
+
+typedef enum {
+        QCL_VALUE_KIND_STRING = 0,
+} qcl_value_kind;
+
+typedef struct {
+        qcl_value_kind kind;
+} qcl_value;
+
+typedef struct {
+        qcl_value base;
+        const char *s;
+} qcl_value_string;
+
+QCL_MAP_TYPE(const char *, qcl_value *, symtbl);
+
+static unsigned
+symtbl_hash(const char **sym)
+{
+        return **sym;
+}
+
+static int
+symtbl_cmp(const char **sym0,
+           const char **sym1)
+{
+        assert(0);
+}
+
+typedef struct {
+        symtbl tbl;
+} _qcl_interpret_context;
+
+static void *
+_qcl_interpret_visit_stmt_assignment(_qcl_visitor         *v,
+                                     _qcl_stmt_assignment *s)
+{
+        _qcl_interpret_context *ctx = (_qcl_interpret_context *)v->context;
+        qcl_value *value = (qcl_value *)s->expr->accept(s->expr, v);
+        symtbl_insert(&ctx->tbl, s->id, value);
+        return NULL;
+}
+
+static void *
+_qcl_interpret_visit_expr_string(_qcl_visitor     *v,
+                                 _qcl_expr_string *e)
+{
+        assert(0);
+}
+
+static _qcl_visitor *
+_interpreter_visitor_alloc(_qcl_interpret_context *ctx)
+{
+        return _qcl_visitor_alloc((void *)ctx,
+                                  _qcl_interpret_visit_expr_string,
+                                  _qcl_interpret_visit_stmt_assignment);
+}
+
+static void
+_qcl_interpret(_qcl_program *p)
+{
+        _qcl_interpret_context ctx = (_qcl_interpret_context) {
+                .tbl = symtbl_create(symtbl_hash, symtbl_cmp),
+        };
+
+        _qcl_visitor *v = _interpreter_visitor_alloc(&ctx);
+
+        for (size_t i = 0; i < p->stmts.len; ++i) {
+                p->stmts.data[i]->accept(p->stmts.data[i], v);
+        }
+}
+
 typedef struct {} qcl_config;
 
 static qcl_config
@@ -762,6 +970,7 @@ qcl_parse_file(const char *fp)
         assert(src = _qcl_load_file(fp));
         lexer = _qcl_lex_file(fp, src);
         prog  = _qcl_create_program(&lexer);
+        _qcl_interpret(&prog);
 }
 
 #endif // QCL_IMPL
