@@ -192,6 +192,7 @@
 // # ARENA            #
 // ####################
 
+#define _QCL_ARENA_DEFAULT_ALLOC_SIZE 4096
 #ifndef _QCL_ARENA_ALIGN_SIZE
 #define _QCL_ARENA_ALIGN_SIZE 16
 #endif
@@ -203,14 +204,12 @@ typedef struct {
         size_t   offset;
 } _qcl_arena;
 
-// Create arena with a pre-alloc'd buffer.
 static void
 _qcl_arena_init(_qcl_arena *a,
-                void       *backing_buf,
-                size_t      buf_size)
+                size_t      bytes)
 {
-        a->buf    = (uint8_t *)backing_buf;
-        a->cap    = buf_size;
+        a->buf    = (uint8_t *)calloc(bytes, 1);
+        a->cap    = bytes;
         a->offset = 0;
 }
 
@@ -227,8 +226,11 @@ _qcl_arena_alloc(_qcl_arena *a, size_t size)
         size_t new_offset = a->offset + aligned;
 
         if (new_offset > a->cap) {
-                fprintf(stderr, "FATAL: _qcl_arena out of memory!\n");
-                exit(1);
+                a->cap *= 2;
+                if (!(a->buf = (uint8_t *)realloc(a->buf, a->cap))) {
+                        fprintf(stderr, "FATAL: _qcl_arena_alloc: could not realloc buffer\n");
+                        exit(1);
+                }
         }
 
         void *p   = a->buf + a->offset;
@@ -252,11 +254,10 @@ _qcl_arena_clear(_qcl_arena *a)
         a->offset = 0;
 }
 
-// NOTE: up to the user of the arena to
-//       free() the backing buffer if alloc'd.
 static void
 _qcl_arena_free(_qcl_arena *a)
 {
+        if (a->buf) free(a->buf);
         a->buf    = NULL;
         a->cap    = 0;
         a->offset = 0;
@@ -327,6 +328,7 @@ typedef struct {
                 const char *msg;
                 _qcl_loc    loc;
         } err;
+        _qcl_arena tarena;
 } _qcl_lexer;
 
 static _qcl_token *
@@ -335,9 +337,11 @@ _qcl_token_alloc(const char *st,
                  _qcl_tt     ty,
                  size_t      r,
                  size_t      c,
-                 const char *fp)
+                 const char *fp,
+                 _qcl_arena *a)
 {
-        _qcl_token *t = (_qcl_token *)malloc(sizeof(_qcl_token));
+        //_qcl_token *t = (_qcl_token *)malloc(sizeof(_qcl_token));
+        _qcl_token *t = (_qcl_token *)_qcl_arena_alloc(a, sizeof(_qcl_token));
         t->lx         = strndup(st, st_n);
         t->ty         = ty;
         t->loc.r      = r;
@@ -362,9 +366,7 @@ _qcl_consume_while(const char *st,
                    int (*pred)(int))
 {
         size_t i = 0;
-        while (st[i] && pred(st[i])) {
-                ++i;
-        }
+        while (st[i] && pred(st[i])) ++i;
         return i;
 }
 
@@ -471,13 +473,20 @@ _qcl_lex_file(const char *fp,
               const char *src)
 {
         symmap symmap = symmap_create(_qcl_symmap_hash, _qcl_symmap_cmp);
-        symmap_insert(&symmap, "=", _QCL_TT_EQUALS);
 
         _qcl_lexer lexer = {
                 .hd = NULL,
                 .tl = NULL,
                 .fp = fp,
+                .err = {
+                        .msg = NULL,
+                        .loc = {0},
+                },
+                .tarena = {0},
         };
+
+        _qcl_arena_init(&lexer.tarena, _QCL_ARENA_DEFAULT_ALLOC_SIZE * sizeof(_qcl_token));
+        symmap_insert(&symmap, "=", _QCL_TT_EQUALS);
 
         size_t r = 1, c = 1, i = 0;
         while (src[i]) {
@@ -488,7 +497,8 @@ _qcl_lex_file(const char *fp,
                 } else if (ch == '\n') {
                         _qcl_token *t = _qcl_token_alloc("\n", 1,
                                                          _QCL_TT_NEWLINE,
-                                                         r, c, lexer.fp);
+                                                         r, c, lexer.fp,
+                                                         &lexer.tarena);
                         _qcl_lexer_append(&lexer, t);
                         ++i, ++r, c = 1;
                 } else if (ch == '#') {
@@ -498,7 +508,8 @@ _qcl_lex_file(const char *fp,
                         size_t len = _qcl_consume_while(src+i, _qcl_isident);
                         _qcl_token *t = _qcl_token_alloc(src+i, len,
                                                          _QCL_TT_IDENTIFIER,
-                                                         r, c, lexer.fp);
+                                                         r, c, lexer.fp,
+                                                         &lexer.tarena);
                         if (_qcl_is_kw(t->lx)) {
                                 t->ty = _QCL_TT_KEYWORD;
                         }
@@ -508,7 +519,8 @@ _qcl_lex_file(const char *fp,
                         size_t len = _qcl_consume_while(src+i, isdigit);
                         _qcl_token *t = _qcl_token_alloc(src+i, len,
                                                          _QCL_TT_DIGIT,
-                                                         r, c, lexer.fp);
+                                                         r, c, lexer.fp,
+                                                         &lexer.tarena);
                         _qcl_lexer_append(&lexer, t);
                         i += len, c += len;
                 } else if (ch == '"' || ch == '\'') {
@@ -520,7 +532,8 @@ _qcl_lex_file(const char *fp,
                         }
                         _qcl_token *t = _qcl_token_alloc(src+i+1, len,
                                                          _QCL_TT_STRING,
-                                                         r, c, lexer.fp);
+                                                         r, c, lexer.fp,
+                                                         &lexer.tarena);
                         _qcl_lexer_append(&lexer, t);
                         i += len+2, c += len+2;
                 } else {
@@ -536,13 +549,14 @@ _qcl_lex_file(const char *fp,
                                 exit(1);
                         }
                         _qcl_token *t = _qcl_token_alloc(src+i, len,
-                                                         ty, r, c, lexer.fp);
+                                                         ty, r, c, lexer.fp,
+                                                         &lexer.tarena);
                         _qcl_lexer_append(&lexer, t);
                         i += len, c += len;
                 }
         }
 
-        _qcl_token *t = _qcl_token_alloc("EOF", 3, _QCL_TT_EOF, r, c, lexer.fp);
+        _qcl_token *t = _qcl_token_alloc("EOF", 3, _QCL_TT_EOF, r, c, lexer.fp, &lexer.tarena);
         _qcl_lexer_append(&lexer, t);
 
         //symmap_destroy(&symmap);
