@@ -267,11 +267,15 @@ _qcl_arena_free(_qcl_arena *a)
 // # KEYWORDS         #
 // ####################
 
-#define QCL_KWD_NULL "null"
-#define QCL_KWD_IF   "if"
-#define QCL_KWD_CL {  \
-        QCL_KWD_NULL, \
-        QCL_KWD_IF,   \
+#define QCL_KWD_NULL  "null"
+#define QCL_KWD_IF    "if"
+#define QCL_KWD_TRUE  "true"
+#define QCL_KWD_FALSE "false"
+#define QCL_KWD_CL {   \
+        QCL_KWD_NULL,  \
+        QCL_KWD_IF,    \
+        QCL_KWD_TRUE,  \
+        QCL_KWD_FALSE, \
         NULL,         \
 }
 
@@ -304,7 +308,7 @@ typedef enum {
         _QCL_TT_COMMA,
         _QCL_TT_COLON,
         _QCL_TT_PLUS,
-        _QCL_TT_SEMICOLON,
+        _QCL_TT_NEWLINE,
 } _qcl_tt;
 
 typedef struct {
@@ -340,7 +344,6 @@ _qcl_token_alloc(const char *st,
                  const char *fp,
                  _qcl_arena *a)
 {
-        //_qcl_token *t = (_qcl_token *)malloc(sizeof(_qcl_token));
         _qcl_token *t = (_qcl_token *)_qcl_arena_alloc(a, sizeof(_qcl_token));
         t->lx         = strndup(st, st_n);
         t->ty         = ty;
@@ -487,7 +490,9 @@ _qcl_lex_file(const char *fp,
 
         _qcl_arena_init(&lexer.tarena, QCL_ARENA_DEFAULT_ALLOC_SIZE * sizeof(_qcl_token));
         symmap_insert(&symmap, "=", _QCL_TT_EQUALS);
-        symmap_insert(&symmap, ";", _QCL_TT_SEMICOLON);
+        symmap_insert(&symmap, "[", _QCL_TT_LSQR);
+        symmap_insert(&symmap, "]", _QCL_TT_RSQR);
+        symmap_insert(&symmap, ",", _QCL_TT_COMMA);
 
         size_t r = 1, c = 1, i = 0;
         while (src[i]) {
@@ -496,6 +501,11 @@ _qcl_lex_file(const char *fp,
                 if (ch == ' ' || ch == '\t') {
                         ++i, ++c;
                 } else if (ch == '\n') {
+                        _qcl_token *t = _qcl_token_alloc("\n", 1,
+                                                         _QCL_TT_NEWLINE,
+                                                         r, c, lexer.fp,
+                                                         &lexer.tarena);
+                        _qcl_lexer_append(&lexer, t);
                         ++i, ++r, c = 1;
                 } else if (ch == '#') {
                         while (src[i] != '\n') ++i, ++c;
@@ -593,6 +603,8 @@ typedef struct _qcl_stmt _qcl_stmt;
 typedef struct _qcl_visitor _qcl_visitor;
 static void *_qcl_accept_expr_string(_qcl_expr *e, _qcl_visitor *v);
 static void *_qcl_accept_expr_identifier(_qcl_expr *e, _qcl_visitor *v);
+static void *_qcl_accept_expr_list(_qcl_expr *e, _qcl_visitor *v);
+static void *_qcl_accept_expr_bool(_qcl_expr *e, _qcl_visitor *v);
 static void *_qcl_accept_stmt_assigment(_qcl_stmt *s, _qcl_visitor *v);
 
 typedef enum {
@@ -615,6 +627,8 @@ typedef enum {
         _QCL_EXPR_KIND_IDENTIFIER,
         _QCL_EXPR_KIND_STRING,
         _QCL_EXPR_KIND_IF,
+        _QCL_EXPR_KIND_LIST,
+        _QCL_EXPR_KIND_BOOL,
 } _qcl_expr_kind;
 
 typedef struct _qcl_expr {
@@ -623,6 +637,8 @@ typedef struct _qcl_expr {
         _qcl_loc        loc;
         void *(*accept)(struct _qcl_expr *e, _qcl_visitor *v);
 } _qcl_expr;
+
+QCL_ARRAY_TYPE(_qcl_expr *, _qcl_expr_array);
 
 typedef struct {
         _qcl_expr    base;
@@ -633,6 +649,16 @@ typedef struct {
         _qcl_expr    base;
         const char  *id;
 } _qcl_expr_identifier;
+
+typedef struct {
+        _qcl_expr base;
+        _qcl_expr_array exprs;
+} _qcl_expr_list;
+
+typedef struct {
+        _qcl_expr base;
+        int       b;
+} _qcl_expr_bool;
 
 static _qcl_expr_string *
 _qcl_expr_string_alloc(const char *s)
@@ -659,6 +685,34 @@ _qcl_expr_identifier_alloc(const char *id)
                 .loc  = {0},
         };
         e->base.accept = _qcl_accept_expr_identifier;
+        return e;
+}
+
+static _qcl_expr_list *
+_qcl_expr_list_alloc(_qcl_expr_array ar)
+{
+        _qcl_expr_list *e =
+                (_qcl_expr_list *)malloc(sizeof(_qcl_expr_list));
+        e->exprs = ar;
+        e->base = (_qcl_expr) {
+                .kind = _QCL_EXPR_KIND_LIST,
+                .loc  = {0},
+        };
+        e->base.accept = _qcl_accept_expr_list;
+        return e;
+}
+
+static _qcl_expr_bool *
+_qcl_expr_bool_alloc(int b)
+{
+        _qcl_expr_bool *e =
+                (_qcl_expr_bool *)malloc(sizeof(_qcl_expr_bool));
+        e->b = b;
+        e->base = (_qcl_expr) {
+                .kind = _QCL_EXPR_KIND_BOOL,
+                .loc  = {0},
+        };
+        e->base.accept = _qcl_accept_expr_bool;
         return e;
 }
 
@@ -726,6 +780,30 @@ _qcl_expect(_qcl_lexer *lexer,
         return it;
 }
 
+static _qcl_expr *_qcl_parse_expr(_qcl_lexer *lexer);
+
+static _qcl_expr_array
+_qcl_parse_comma_sep_exprs(_qcl_lexer *lexer)
+{
+        _qcl_expr_array ar = qcl_array_empty(_qcl_expr_array);
+
+        while (1) {
+                _qcl_expr *e = _qcl_parse_expr(lexer);
+                if (!e) break;
+                qcl_array_append(ar, e);
+
+                if (_QCL_SP(lexer, 0)->ty == _QCL_TT_COMMA) {
+                        (void)_qcl_lexer_next(lexer);
+                } else {
+                        break;
+                }
+        }
+
+        (void)_qcl_expect(lexer, _QCL_TT_RSQR);
+
+        return ar;
+}
+
 static _qcl_expr *
 _qcl_parse_primary_expr(_qcl_lexer *lexer)
 {
@@ -743,6 +821,25 @@ _qcl_parse_primary_expr(_qcl_lexer *lexer)
                 case _QCL_TT_STRING: {
                         expr = (_qcl_expr *)_qcl_expr_string_alloc(_qcl_lexer_next(lexer)->lx);
                         expr->loc = hd->loc;
+                } break;
+                case _QCL_TT_LSQR: {
+                        (void)_qcl_lexer_next(lexer);
+                        _qcl_expr_array exprs = _qcl_parse_comma_sep_exprs(lexer);
+                        expr = (_qcl_expr *)_qcl_expr_list_alloc(exprs);
+                        expr->loc = hd->loc;
+                } break;
+                case _QCL_TT_KEYWORD: {
+                        if (!strcmp(hd->lx, QCL_KWD_TRUE)) {
+                                (void)_qcl_lexer_next(lexer);
+                                expr = (_qcl_expr *)_qcl_expr_bool_alloc(1);
+                                expr->loc = hd->loc;
+                        } else if (!strcmp(hd->lx, QCL_KWD_FALSE)) {
+                                (void)_qcl_lexer_next(lexer);
+                                expr = (_qcl_expr *)_qcl_expr_bool_alloc(0);
+                                expr->loc = hd->loc;
+                        } else {
+                                return expr;
+                        }
                 } break;
                 default: return expr;
                 }
@@ -780,7 +877,7 @@ _qcl_parse_stmt_assignment(_qcl_lexer *lexer)
                 return NULL;
         }
 
-        (void)_qcl_expect(lexer, _QCL_TT_SEMICOLON);
+        (void)_qcl_expect(lexer, _QCL_TT_NEWLINE);
 
         return _qcl_stmt_assignment_alloc(id, expr);
 }
@@ -822,7 +919,7 @@ _qcl_create_program(_qcl_lexer *lexer)
         };
 
         while (_QCL_SP(lexer, 0)->ty != _QCL_TT_EOF) {
-                if (lexer->hd->ty == _QCL_TT_SEMICOLON) {
+                if (lexer->hd->ty == _QCL_TT_NEWLINE) {
                         _qcl_lexer_next(lexer);
                         continue;
                 }
@@ -840,6 +937,8 @@ _qcl_create_program(_qcl_lexer *lexer)
 
 typedef void *(*_qcl_visit_expr_string_sig)(_qcl_visitor *v, _qcl_expr_string *s);
 typedef void *(*_qcl_visit_expr_identifier_sig)(_qcl_visitor *v, _qcl_expr_identifier *s);
+typedef void *(*_qcl_visit_expr_list_sig)(_qcl_visitor *v, _qcl_expr_list *s);
+typedef void *(*_qcl_visit_expr_bool_sig)(_qcl_visitor *v, _qcl_expr_bool *s);
 typedef void *(*_qcl_visit_stmt_assignment_sig)(_qcl_visitor *v, _qcl_stmt_assignment *s);
 
 typedef struct _qcl_visitor {
@@ -848,6 +947,8 @@ typedef struct _qcl_visitor {
         // Expressions
         _qcl_visit_expr_string_sig     visit_expr_string;
         _qcl_visit_expr_identifier_sig visit_expr_identifier;
+        _qcl_visit_expr_list_sig       visit_expr_list;
+        _qcl_visit_expr_bool_sig       visit_expr_bool;
 
         // Statements
         _qcl_visit_stmt_assignment_sig visit_stmt_assignment;
@@ -857,6 +958,8 @@ static _qcl_visitor *
 _qcl_visitor_alloc(void                           *context,
                    _qcl_visit_expr_string_sig      visit_expr_string,
                    _qcl_visit_expr_identifier_sig  visit_expr_identifier,
+                   _qcl_visit_expr_list_sig        visit_expr_list,
+                   _qcl_visit_expr_bool_sig        visit_expr_bool,
                    _qcl_visit_stmt_assignment_sig  visit_stmt_assignment)
 {
         _qcl_visitor *v = (_qcl_visitor *)malloc(sizeof(_qcl_visitor));
@@ -865,6 +968,8 @@ _qcl_visitor_alloc(void                           *context,
 
         v->visit_stmt_assignment = visit_stmt_assignment;
         v->visit_expr_identifier = visit_expr_identifier;
+        v->visit_expr_list       = visit_expr_list;
+        v->visit_expr_bool       = visit_expr_bool;
         v->visit_expr_string     = visit_expr_string;
 
         return v ;
@@ -890,6 +995,26 @@ _qcl_accept_expr_identifier(_qcl_expr    *e,
 }
 
 static void *
+_qcl_accept_expr_list(_qcl_expr    *e,
+                      _qcl_visitor *v)
+{
+        if (v->visit_expr_list) {
+                return v->visit_expr_list(v, (_qcl_expr_list *)e);
+        }
+        return NULL;
+}
+
+static void *
+_qcl_accept_expr_bool(_qcl_expr    *e,
+                      _qcl_visitor *v)
+{
+        if (v->visit_expr_bool) {
+                return v->visit_expr_bool(v, (_qcl_expr_bool *)e);
+        }
+        return NULL;
+}
+
+static void *
 _qcl_accept_stmt_assigment(_qcl_stmt *s, _qcl_visitor *v)
 {
         if (v->visit_stmt_assignment) {
@@ -904,23 +1029,75 @@ _qcl_accept_stmt_assigment(_qcl_stmt *s, _qcl_visitor *v)
 
 typedef enum {
         QCL_VALUE_KIND_STRING = 0,
+        QCL_VALUE_KIND_LIST,
+        QCL_VALUE_KIND_BOOL,
 } qcl_value_kind;
 
-typedef struct {
-        qcl_value_kind kind;
-} qcl_value;
+typedef struct { qcl_value_kind kind; } qcl_value;
+
+QCL_ARRAY_TYPE(qcl_value *, qcl_value_array);
 
 typedef struct {
         qcl_value base;
         const char *s;
 } qcl_value_string;
 
+typedef struct {
+        qcl_value       base;
+        qcl_value_array values;
+} qcl_value_list;
+
+typedef struct {
+        qcl_value base;
+        int       b;
+} qcl_value_bool;
+
+static qcl_value_string *qcl_value_string_alloc(const char *s);
+static qcl_value_list   *qcl_value_list_alloc(qcl_value_array values);
+static qcl_value_bool   *qcl_value_bool_alloc(int b);
+
+static qcl_value *
+_qcl_value_copy(const qcl_value *v)
+{
+        if (v->kind == QCL_VALUE_KIND_STRING) {
+                return (qcl_value *)qcl_value_string_alloc(((qcl_value_string *)v)->s);
+        } else if (v->kind == QCL_VALUE_KIND_LIST) {
+                qcl_value_array ar = qcl_array_empty(qcl_value_array);
+                qcl_value_list *lst = (qcl_value_list *)v;
+                for (size_t i = 0; i < lst->values.len; ++i) {
+                        qcl_array_append(ar, _qcl_value_copy(lst->values.data[i]));
+                }
+                return (qcl_value *)qcl_value_list_alloc(ar);
+        } else {
+                assert(0 && "unimplemented");
+        }
+}
+
 static qcl_value_string *
 qcl_value_string_alloc(const char *s)
 {
         qcl_value_string *v = (qcl_value_string *)malloc(sizeof(qcl_value_string));
-        v->s = s;
-        v->base.kind = QCL_VALUE_KIND_STRING;
+        v->s                = s;
+        v->base.kind        = QCL_VALUE_KIND_STRING;
+        return v;
+}
+
+static qcl_value_list *
+qcl_value_list_alloc(qcl_value_array values)
+{
+        qcl_value_list *v = (qcl_value_list *)malloc(sizeof(qcl_value_list));
+        v->values         = values;
+        v->base.kind      = QCL_VALUE_KIND_LIST;
+        return v;
+}
+
+static qcl_value_bool *
+qcl_value_bool_alloc(int b)
+{
+        qcl_value_bool *v = (qcl_value_bool *)malloc(sizeof(qcl_value_bool));
+        v->b              = b;
+        v->base.kind      = QCL_VALUE_KIND_BOOL;
+        return v;
 }
 
 QCL_MAP_TYPE(const char *, qcl_value *, symtbl);
@@ -950,8 +1127,6 @@ _qcl_interpret_visit_stmt_assignment(_qcl_visitor         *v,
         qcl_value *value = (qcl_value *)s->expr->accept(s->expr, v);
         symtbl_insert(&ctx->tbl, s->id, value);
 
-        printf("%s = %s\n", s->id, ((qcl_value_string *)value)->s);
-
         return NULL;
 }
 
@@ -975,10 +1150,33 @@ _qcl_interpret_visit_expr_identifier(_qcl_visitor         *v,
                 exit(1);
         }
 
-        qcl_value *value = *(qcl_value **)symtbl_get(&ctx->tbl, e->id);
+        qcl_value *value = _qcl_value_copy(*(qcl_value **)symtbl_get(&ctx->tbl, e->id));
         assert(value);
 
         return value;
+}
+
+static void *
+_qcl_interpret_visit_expr_list(_qcl_visitor   *v,
+                               _qcl_expr_list *e)
+{
+        _qcl_interpret_context *ctx = (_qcl_interpret_context *)v->context;
+
+        qcl_value_array values = qcl_array_empty(qcl_value_array);
+
+        for (size_t i = 0; i < e->exprs.len; ++i) {
+                qcl_array_append(values, e->exprs.data[i]->accept(e->exprs.data[i], v));
+        }
+
+        return qcl_value_list_alloc(values);
+}
+
+static void *
+_qcl_interpret_visit_expr_bool(_qcl_visitor   *v,
+                               _qcl_expr_bool *e)
+{
+        (void)v;
+        return qcl_value_bool_alloc(e->b);
 }
 
 static _qcl_visitor *
@@ -987,10 +1185,12 @@ _interpreter_visitor_alloc(_qcl_interpret_context *ctx)
         return _qcl_visitor_alloc((void *)ctx,
                                   _qcl_interpret_visit_expr_string,
                                   _qcl_interpret_visit_expr_identifier,
+                                  _qcl_interpret_visit_expr_list,
+                                  _qcl_interpret_visit_expr_bool,
                                   _qcl_interpret_visit_stmt_assignment);
 }
 
-static void
+static _qcl_interpret_context
 _qcl_interpret(_qcl_program *p)
 {
         _qcl_interpret_context ctx = (_qcl_interpret_context) {
@@ -1002,9 +1202,13 @@ _qcl_interpret(_qcl_program *p)
         for (size_t i = 0; i < p->stmts.len; ++i) {
                 p->stmts.data[i]->accept(p->stmts.data[i], v);
         }
+
+        return ctx;
 }
 
-typedef struct {} qcl_config;
+typedef struct {
+        _qcl_interpret_context interpreter;
+} qcl_config;
 
 static qcl_config
 qcl_parse_file(const char *fp)
@@ -1015,10 +1219,19 @@ qcl_parse_file(const char *fp)
 
         assert(src = _qcl_load_file(fp));
         lexer = _qcl_lex_file(fp, src);
-        /* _qcl_lexer_dump(&lexer); */
-        /* assert(0); */
         prog  = _qcl_create_program(&lexer);
-        _qcl_interpret(&prog);
+
+        return (qcl_config) {
+                .interpreter = _qcl_interpret(&prog),
+        };
+}
+
+static qcl_value *
+qcl_value_get(qcl_config *config,
+              const char *var)
+{
+        if (!symtbl_contains(&config->interpreter.tbl, var)) return NULL;
+        return *(qcl_value **)symtbl_get(&config->interpreter.tbl, var);
 }
 
 #endif // QCL_IMPL
