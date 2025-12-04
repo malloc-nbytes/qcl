@@ -1,3 +1,32 @@
+/**
+ * Queryable Configuration Language
+ * Copyright (C) 2025 malloc-nbytes
+ * Contact: zdhdev@yahoo.com
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, see
+ * <https://www.gnu.org/licenses/>.
+ *
+ * AUTHORS (any contributors put your name here):
+ *   malloc-nbytes
+ *
+ * USAGE:
+ *   Include this header and define the implementation macro (*before* the header):
+ *     #define QCL_IMPL
+ *     #include "qcl.h"
+ *     ... other includes
+ */
+
 #ifndef QCL_INCLUDED_H
 #define QCL_INCLUDED_H
 
@@ -10,6 +39,9 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+/**
+ * A simple generic map datastructure with C macro magic.
+ */
 #define QCL_MAP_DEFAULT_CAPACITY 2048
 #define QCL_MAP_TYPE(ktype, vtype, mapname) \
         typedef unsigned (*qcl_##mapname##_hash_sig)(ktype *); \
@@ -101,11 +133,11 @@
                 return NULL; \
         } \
 
-#define QCL_ARRAY_TYPE(ty, name) \
-    typedef struct name {        \
-        ty *data;                \
-        size_t len, cap;         \
-    } name
+#define QCL_ARRAY_TYPE(ty, name)                \
+        typedef struct name {                   \
+                ty *data;                       \
+                size_t len, cap;                \
+        } name
 
 #define qcl_array_empty(arr_ty)                 \
         (arr_ty) {                              \
@@ -114,37 +146,37 @@
                 .cap = 0,                       \
         }
 
-#define qcl_array_init_type(da)                 \
-    do {                                        \
-        (da).data = malloc(sizeof(*(da).data)); \
-        (da).cap = 1;                           \
-        (da).len = 0;                           \
-    } while (0)
+#define qcl_array_init_type(da)                         \
+        do {                                            \
+                (da).data = malloc(sizeof(*(da).data)); \
+                (da).cap = 1;                           \
+                (da).len = 0;                           \
+        } while (0)
 
-#define qcl_array(ty, name)                                        \
-    struct {                                                       \
-        ty *data;                                                  \
-        size_t len, cap;                                           \
-    } (name) = { .data = (typeof(ty) *)malloc(sizeof(ty)), .len = 0, .cap = 1 };
+#define qcl_array(ty, name)                                             \
+        struct {                                                        \
+                ty *data;                                               \
+                size_t len, cap;                                        \
+        } (name) = { .data = (typeof(ty) *)malloc(sizeof(ty)), .len = 0, .cap = 1 };
 
 #define qcl_array_append(da, value)                                     \
-    do {                                                                \
-        if ((da).len >= (da).cap) {                                     \
-            (da).cap = (da).cap ? (da).cap * 2 : 2;                     \
-            (da).data = (typeof(*((da).data)) *)                        \
-                realloc((da).data,                                      \
-                        (da).cap * sizeof(*((da).data)));               \
-        }                                                               \
-        (da).data[(da).len++] = (value);                                \
-    } while (0)
+        do {                                                            \
+                if ((da).len >= (da).cap) {                             \
+                        (da).cap = (da).cap ? (da).cap * 2 : 2;         \
+                        (da).data = (typeof(*((da).data)) *)            \
+                                realloc((da).data,                      \
+                                        (da).cap * sizeof(*((da).data))); \
+                }                                                       \
+                (da).data[(da).len++] = (value);                        \
+        } while (0)
 
-#define qcl_array_free(da)       \
-    do {                         \
-        if ((da).data != NULL) { \
-                free((da).data); \
-        }                        \
-        (da).len = (da).cap = 0; \
-    } while (0)
+#define qcl_array_free(da)                      \
+        do {                                    \
+                if ((da).data != NULL) {        \
+                        free((da).data);        \
+                }                               \
+                (da).len = (da).cap = 0;        \
+        } while (0)
 
 #define qcl_array_at_s(da, i)                                      \
     ((i) < (da).len ? (da).data[i] : (fprintf(stderr,              \
@@ -155,12 +187,12 @@
 
 #define qcl_array_clear(da) (da).len = 0;
 
-#define qcl_array_rm_at(da, idx) \
-    do {                                                     \
-        for (size_t __i_ = (idx); __i_ < (da).len-1; ++__i_) \
-            (da).data[__i_] = (da).data[__i_+1];             \
-        (da).len--;                                          \
-    } while (0)
+#define qcl_array_rm_at(da, idx)                                        \
+        do {                                                            \
+                for (size_t __i_ = (idx); __i_ < (da).len-1; ++__i_)    \
+                        (da).data[__i_] = (da).data[__i_+1];            \
+                (da).len--;                                             \
+        } while (0)
 
 // ####################
 // # KEYWORDS         #
@@ -186,34 +218,35 @@ _qcl_is_kw(const char *s)
 }
 
 typedef enum {
-        QCL_TT_NONE = 0,
-        QCL_TT_EOF,
-        QCL_TT_IDENTIFIER,
-        QCL_TT_KEYWORD,
-        QCL_TT_STRING,
-        QCL_TT_DIGIT,
-        QCL_TT_LPAREN,
-        QCL_TT_RPAREN,
-        QCL_TT_LCURLY,
-        QCL_TT_RCURLY,
-        QCL_TT_LSQR, // 10
-        QCL_TT_RSQR,
-        QCL_TT_EQUALS,
-        QCL_TT_COMMA,
-        QCL_TT_NEWLINE,
-        QCL_TT_COLON,
-        QCL_TT_PLUS,
-} qcl_tt;
+        _QCL_TT_NONE = 0,
+        _QCL_TT_EOF,
+        _QCL_TT_IDENTIFIER,
+        _QCL_TT_KEYWORD,
+        _QCL_TT_STRING,
+        _QCL_TT_DIGIT,
+        _QCL_TT_LPAREN,
+        _QCL_TT_RPAREN,
+        _QCL_TT_LCURLY,
+        _QCL_TT_RCURLY,
+        _QCL_TT_LSQR, // 10
+        _QCL_TT_RSQR,
+        _QCL_TT_EQUALS,
+        _QCL_TT_COMMA,
+        _QCL_TT_NEWLINE,
+        _QCL_TT_COLON,
+        _QCL_TT_PLUS,
+} _qcl_tt;
 
 typedef struct {
-        size_t r, c;
+        size_t      r;
+        size_t      c;
         const char *fp;
 } _qcl_loc;
 
 typedef struct _qcl_token {
-        char *lx;
-        qcl_tt ty;
-        _qcl_loc loc;
+        char              *lx;
+        _qcl_tt            ty;
+        _qcl_loc           loc;
         struct _qcl_token *n;
 } _qcl_token;
 
@@ -223,24 +256,24 @@ typedef struct {
         const char *fp;
         struct {
                 const char *msg;
-                _qcl_loc loc;
+                _qcl_loc    loc;
         } err;
 } _qcl_lexer;
 
 static _qcl_token *
 _qcl_token_alloc(const char *st,
                  size_t      st_n,
-                 qcl_tt      ty,
+                 _qcl_tt     ty,
                  size_t      r,
                  size_t      c,
                  const char *fp)
 {
         _qcl_token *t = (_qcl_token *)malloc(sizeof(_qcl_token));
-        t->lx        = strndup(st, st_n);
-        t->ty        = ty;
-        t->loc.r     = r;
-        t->loc.c     = c;
-        t->loc.fp    = fp;
+        t->lx         = strndup(st, st_n);
+        t->ty         = ty;
+        t->loc.r      = r;
+        t->loc.c      = c;
+        t->loc.fp     = fp;
         return t;
 }
 
@@ -260,7 +293,9 @@ _qcl_consume_while(const char *st,
                    int (*pred)(int))
 {
         size_t i = 0;
-        while (st[i] && pred(st[i])) ++i;
+        while (st[i] && pred(st[i])) {
+                ++i;
+        }
         return i;
 }
 
@@ -313,12 +348,12 @@ _qcl_lexer_dump(const _qcl_lexer *l)
         }
 }
 
-QCL_MAP_TYPE(const char *, qcl_tt, symmap)
+QCL_MAP_TYPE(const char *, _qcl_tt, symmap);
 
 static unsigned
 _qcl_symmap_hash(const char **s)
 {
-        // ╭∩╮(-_-)╭∩╮ why the fuck wont this work
+        // TODO: not sure why this wont this work
 
         /* unsigned hash = 5381; */
         /* int c; */
@@ -340,10 +375,10 @@ _qcl_symmap_cmp(const char **s0,
 static size_t
 _qcl_determine_sym(const char *st,
                    size_t      len,
-                   qcl_tt     *ty,
+                   _qcl_tt    *ty,
                    symmap     *map)
 {
-        *ty = QCL_TT_NONE;
+        *ty = _QCL_TT_NONE;
 
         char buf[256] = {0};
         (void)strncpy(buf, st, len);
@@ -357,7 +392,7 @@ _qcl_determine_sym(const char *st,
                 buf[i] = 0;
         }
 
-        return QCL_TT_NONE;
+        return _QCL_TT_NONE;
 }
 
 static _qcl_lexer
@@ -365,7 +400,7 @@ _qcl_lex_file(const char *fp,
               const char *src)
 {
         symmap symmap = symmap_create(_qcl_symmap_hash, _qcl_symmap_cmp);
-        symmap_insert(&symmap, "=", QCL_TT_EQUALS);
+        symmap_insert(&symmap, "=", _QCL_TT_EQUALS);
 
         _qcl_lexer lexer = {
                 .hd = NULL,
@@ -379,53 +414,51 @@ _qcl_lex_file(const char *fp,
 
                 if (ch == ' ' || ch == '\t') {
                         ++i, ++c;
-                } else if (ch == '\n' || ch == '\r') {
+                } else if (ch == '\n') {
                         _qcl_token *t = _qcl_token_alloc("\n", 1,
-                                                         QCL_TT_NEWLINE,
+                                                         _QCL_TT_NEWLINE,
                                                          r, c, lexer.fp);
                         _qcl_lexer_append(&lexer, t);
                         ++i, ++r, c = 1;
                 } else if (ch == '#') {
                         while (src[i] != '\n') ++i, ++c;
-                        ++i, ++r, c = 0;
+                        ++i, ++r, c = 1;
                 } else if (isalpha(ch) || ch == '_' || ch == '-') {
                         size_t len = _qcl_consume_while(src+i, _qcl_isident);
                         _qcl_token *t = _qcl_token_alloc(src+i, len,
-                                                         QCL_TT_IDENTIFIER,
+                                                         _QCL_TT_IDENTIFIER,
                                                          r, c, lexer.fp);
                         if (_qcl_is_kw(t->lx)) {
-                                t->ty = QCL_TT_KEYWORD;
+                                t->ty = _QCL_TT_KEYWORD;
                         }
                         _qcl_lexer_append(&lexer, t);
                         i += len, c += len;
                 } else if (isdigit(ch)) {
                         size_t len = _qcl_consume_while(src+i, isdigit);
                         _qcl_token *t = _qcl_token_alloc(src+i, len,
-                                                         QCL_TT_DIGIT,
+                                                         _QCL_TT_DIGIT,
                                                          r, c, lexer.fp);
                         _qcl_lexer_append(&lexer, t);
                         i += len, c += len;
                 } else if (ch == '"' || ch == '\'') {
                         size_t len;
                         if (ch == '"') {
-                                len = _qcl_consume_while(src+i, _qcl_notquote);
+                                len = _qcl_consume_while(src+i+1, _qcl_notquote);
                         } else {
-                                len = _qcl_consume_while(src+i, _qcl_notsinglequote);
+                                len = _qcl_consume_while(src+i+1, _qcl_notsinglequote);
                         }
                         _qcl_token *t = _qcl_token_alloc(src+i+1, len,
-                                                         QCL_TT_STRING,
+                                                         _QCL_TT_STRING,
                                                          r, c, lexer.fp);
                         _qcl_lexer_append(&lexer, t);
                         i += len+2, c += len+2;
                 } else {
-                        // TODO: <single> + <multi> (no spaces does not work)
-                        //       ie: +||
-
                         size_t len     = _qcl_consume_while(src+i, _qcl_issym);
                         size_t old_len = len;
-                        qcl_tt ty      = QCL_TT_NONE;
+                        _qcl_tt ty     = _QCL_TT_NONE;
                         len            = _qcl_determine_sym(src+i, len, &ty, &symmap);
-                        if (ty == QCL_TT_NONE) {
+                        if (ty == _QCL_TT_NONE) {
+                                // TODO: put error in error struct of lexer.
                                 char buf[256] = {0};
                                 strncpy(buf, src+i, old_len);
                                 printf("error: unknown symbol: %s\n", buf);
@@ -438,7 +471,7 @@ _qcl_lex_file(const char *fp,
                 }
         }
 
-        _qcl_token *t = _qcl_token_alloc("EOF", 3, QCL_TT_EOF, r, c, lexer.fp);
+        _qcl_token *t = _qcl_token_alloc("EOF", 3, _QCL_TT_EOF, r, c, lexer.fp);
         _qcl_lexer_append(&lexer, t);
 
         return lexer;
@@ -461,6 +494,8 @@ _qcl_load_file(const char *path)
         buf = (char *)malloc(size);
         fread(buf, 1, size, f);
         fclose(f);
+
+        buf[size-1] = 0;
 
         return buf;
 }
@@ -514,7 +549,7 @@ typedef struct {
 
 typedef struct {
         _qcl_stmt    base;
-        const char *id;
+        const char  *id;
         _qcl_expr   *expr;
 } _qcl_stmt_assignment;
 
@@ -553,7 +588,7 @@ typedef struct {
 
 static _qcl_token *
 _qcl_expect(_qcl_lexer *lexer,
-            qcl_tt      ty)
+            _qcl_tt     ty)
 {
         _qcl_token *it = _qcl_lexer_next(lexer);
         if (!it || it->ty != ty) return NULL;
@@ -572,7 +607,7 @@ _qcl_parse_stmt_assignment(_qcl_lexer *lexer)
         const char *id;
         _qcl_expr  *expr;
 
-        if (!(id = _qcl_expect(lexer, QCL_TT_IDENTIFIER)->lx)) {
+        if (!(id = _qcl_expect(lexer, _QCL_TT_IDENTIFIER)->lx)) {
                 return NULL;
         }
 
@@ -598,11 +633,14 @@ _qcl_parse_stmt_keyword(const _qcl_lexer *lexer)
 static _qcl_stmt *
 _qcl_parse_stmt(_qcl_lexer *lexer)
 {
-        _qcl_token *hd = _qcl_lexer_peek(lexer, 0);
-        if (hd->ty == QCL_TT_KEYWORD) {
+        _qcl_token *hd;
+
+        if (!(hd = _qcl_lexer_peek(lexer, 0))) return NULL;
+
+        if (hd->ty == _QCL_TT_KEYWORD) {
                 return _qcl_parse_stmt_keyword(lexer);
-        } else if (hd->ty == QCL_TT_IDENTIFIER
-                   && _QCL_SP(lexer, 1)->ty == QCL_TT_EQUALS) {
+        } else if (hd->ty == _QCL_TT_IDENTIFIER
+                   && _QCL_SP(lexer, 1)->ty == _QCL_TT_EQUALS) {
                 return (_qcl_stmt *)_qcl_parse_stmt_assignment(lexer);
         } else {
                 return (_qcl_stmt *)_qcl_parse_stmt_expr(lexer);
@@ -616,7 +654,7 @@ _qcl_create_program(_qcl_lexer *lexer)
                 .stmts = qcl_array_empty(_qcl_stmt_array),
         };
 
-        while (_QCL_SP(lexer, 0)->ty != QCL_TT_EOF) {
+        while (_QCL_SP(lexer, 0)->ty != _QCL_TT_EOF) {
                 _qcl_stmt *stmt = _qcl_parse_stmt(lexer);
                 if (!stmt) break;
                 qcl_array_append(prog.stmts, stmt);
@@ -630,12 +668,13 @@ typedef struct {} qcl_config;
 static qcl_config
 qcl_parse_file(const char *fp)
 {
-        char *src = _qcl_load_file(fp);
-        assert(src);
+        char         *src;
+        _qcl_lexer    lexer;
+        _qcl_program  prog;
 
-        _qcl_lexer lexer = _qcl_lex_file(fp, src);
-
-        _qcl_program prog = _qcl_create_program(&lexer);
+        assert(src = _qcl_load_file(fp));
+        lexer = _qcl_lex_file(fp, src);
+        prog  = _qcl_create_program(&lexer);
 }
 
 #endif // QCL_IMPL
