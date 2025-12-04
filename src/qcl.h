@@ -302,9 +302,9 @@ typedef enum {
         _QCL_TT_RSQR,
         _QCL_TT_EQUALS,
         _QCL_TT_COMMA,
-        _QCL_TT_NEWLINE,
         _QCL_TT_COLON,
         _QCL_TT_PLUS,
+        _QCL_TT_SEMICOLON,
 } _qcl_tt;
 
 typedef struct {
@@ -487,6 +487,7 @@ _qcl_lex_file(const char *fp,
 
         _qcl_arena_init(&lexer.tarena, QCL_ARENA_DEFAULT_ALLOC_SIZE * sizeof(_qcl_token));
         symmap_insert(&symmap, "=", _QCL_TT_EQUALS);
+        symmap_insert(&symmap, ";", _QCL_TT_SEMICOLON);
 
         size_t r = 1, c = 1, i = 0;
         while (src[i]) {
@@ -495,11 +496,6 @@ _qcl_lex_file(const char *fp,
                 if (ch == ' ' || ch == '\t') {
                         ++i, ++c;
                 } else if (ch == '\n') {
-                        _qcl_token *t = _qcl_token_alloc("\n", 1,
-                                                         _QCL_TT_NEWLINE,
-                                                         r, c, lexer.fp,
-                                                         &lexer.tarena);
-                        _qcl_lexer_append(&lexer, t);
                         ++i, ++r, c = 1;
                 } else if (ch == '#') {
                         while (src[i] != '\n') ++i, ++c;
@@ -578,7 +574,7 @@ _qcl_load_file(const char *path)
         size = ftell(f);
         fseek(f, 0, SEEK_SET);
 
-        buf = (char *)malloc(size);
+        buf = (char *)malloc(size + 1);
         fread(buf, 1, size, f);
         fclose(f);
 
@@ -784,7 +780,7 @@ _qcl_parse_stmt_assignment(_qcl_lexer *lexer)
                 return NULL;
         }
 
-        (void)_qcl_expect(lexer, _QCL_TT_NEWLINE);
+        (void)_qcl_expect(lexer, _QCL_TT_SEMICOLON);
 
         return _qcl_stmt_assignment_alloc(id, expr);
 }
@@ -826,7 +822,7 @@ _qcl_create_program(_qcl_lexer *lexer)
         };
 
         while (_QCL_SP(lexer, 0)->ty != _QCL_TT_EOF) {
-                if (lexer->hd->ty == _QCL_TT_NEWLINE) {
+                if (lexer->hd->ty == _QCL_TT_SEMICOLON) {
                         _qcl_lexer_next(lexer);
                         continue;
                 }
@@ -1019,6 +1015,8 @@ qcl_parse_file(const char *fp)
 
         assert(src = _qcl_load_file(fp));
         lexer = _qcl_lex_file(fp, src);
+        /* _qcl_lexer_dump(&lexer); */
+        /* assert(0); */
         prog  = _qcl_create_program(&lexer);
         _qcl_interpret(&prog);
 }
