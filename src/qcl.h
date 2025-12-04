@@ -25,6 +25,9 @@
  *     #define QCL_IMPL
  *     #include "qcl.h"
  *     ... other includes
+ *
+ * TODO:
+ *   Impl map_destroy() to map macro code gen.
  */
 
 #ifndef QCL_INCLUDED_H
@@ -38,6 +41,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdint.h>
 
 /**
  * A simple generic map datastructure with C macro magic.
@@ -64,11 +68,11 @@
                 qcl_##mapname##_cmp_sig cmp; \
         } mapname; \
         \
-        mapname mapname##_create(qcl_##mapname##_hash_sig hash, qcl_##mapname##_cmp_sig cmp); \
-        void mapname##_destroy(mapname *map); \
-        void mapname##_insert(mapname *map, ktype k, vtype v); \
-        int mapname##_contains(mapname *map, ktype k); \
-        vtype *mapname##_get(mapname *map, ktype k); \
+        mapname  mapname##_create(qcl_##mapname##_hash_sig hash, qcl_##mapname##_cmp_sig cmp); \
+        void     mapname##_destroy(mapname *map); \
+        void     mapname##_insert(mapname *map, ktype k, vtype v); \
+        int      mapname##_contains(mapname *map, ktype k); \
+        vtype   *mapname##_get(mapname *map, ktype k); \
         \
         mapname \
         mapname##_create(qcl_##mapname##_hash_sig hash, \
@@ -87,6 +91,7 @@
                         .cmp = cmp, \
                 }; \
         } \
+        \
         void \
         mapname##_insert(mapname *map, ktype k, vtype v) \
         { \
@@ -119,6 +124,7 @@
         { \
                 return mapname##_get(map, k) != NULL; \
         } \
+        \
         vtype * \
         mapname##_get(mapname *map, ktype k) \
         { \
@@ -146,13 +152,6 @@
                 .cap = 0,                       \
         }
 
-#define qcl_array_init_type(da)                         \
-        do {                                            \
-                (da).data = malloc(sizeof(*(da).data)); \
-                (da).cap = 1;                           \
-                (da).len = 0;                           \
-        } while (0)
-
 #define qcl_array(ty, name)                                             \
         struct {                                                        \
                 ty *data;                                               \
@@ -178,11 +177,6 @@
                 (da).len = (da).cap = 0;        \
         } while (0)
 
-#define qcl_array_at_s(da, i)                                      \
-    ((i) < (da).len ? (da).data[i] : (fprintf(stderr,              \
-    "[qcl_array error]: index %zu is out of bounds (len = %zu)\n", \
-    (size_t)(i), (size_t)(da).len), exit(1), (da).data[0]))
-
 #define qcl_array_at(da, i) ((da).data[i])
 
 #define qcl_array_clear(da) (da).len = 0;
@@ -195,8 +189,83 @@
         } while (0)
 
 // ####################
+// # ARENA            #
+// ####################
+
+#ifndef _QCL_ARENA_ALIGN_SIZE
+#define _QCL_ARENA_ALIGN_SIZE 16
+#endif
+#define _QCL_ARENA_ALIGN_MASK (_QCL_ARENA_ALIGN_SIZE-1)
+
+typedef struct {
+        uint8_t *buf;
+        size_t   cap;
+        size_t   offset;
+} _qcl_arena;
+
+// Create arena with a pre-alloc'd buffer.
+static void
+_qcl_arena_init(_qcl_arena *a,
+                void       *backing_buf,
+                size_t      buf_size)
+{
+        a->buf    = (uint8_t *)backing_buf;
+        a->cap    = buf_size;
+        a->offset = 0;
+}
+
+static inline size_t
+_qcl_arena_alignup(size_t n)
+{
+        return (n + _QCL_ARENA_ALIGN_MASK) & ~_QCL_ARENA_ALIGN_MASK;
+}
+
+static void *
+_qcl_arena_alloc(_qcl_arena *a, size_t size)
+{
+        size_t aligned    = _qcl_arena_alignup(size);
+        size_t new_offset = a->offset + aligned;
+
+        if (new_offset > a->cap) {
+                fprintf(stderr, "FATAL: _qcl_arena out of memory!\n");
+                exit(1);
+        }
+
+        void *p   = a->buf + a->offset;
+        a->offset = new_offset;
+        return p;
+}
+
+#if 0
+static void *
+_qcl_arena_allocz(_qcl_arena *a, size_t size)
+{
+        void *p = _qcl_arena_alloc(a, size);
+        if (p) memset(p, 0, size);
+        return p;
+}
+#endif
+
+static void
+_qcl_arena_clear(_qcl_arena *a)
+{
+        a->offset = 0;
+}
+
+// NOTE: up to the user of the arena to
+//       free() the backing buffer if alloc'd.
+static void
+_qcl_arena_free(_qcl_arena *a)
+{
+        a->buf    = NULL;
+        a->cap    = 0;
+        a->offset = 0;
+}
+
+// ####################
 // # KEYWORDS         #
 // ####################
+
 #define QCL_KWD_NULL "null"
 #define QCL_KWD_IF   "if"
 #define QCL_KWD_CL {  \
@@ -208,7 +277,7 @@
 static int
 _qcl_is_kw(const char *s)
 {
-        const char *kwds[] = QCL_KWD_CL;
+        static const char *kwds[] = QCL_KWD_CL;
         for (size_t i = 0; kwds[i]; ++i) {
                 if (!strcmp(s, kwds[i])) {
                         return 1;
@@ -389,6 +458,8 @@ _qcl_determine_sym(const char *st,
                         return (size_t)i+1;
                 }
 
+                assert(i < 256);
+
                 buf[i] = 0;
         }
 
@@ -473,6 +544,8 @@ _qcl_lex_file(const char *fp,
 
         _qcl_token *t = _qcl_token_alloc("EOF", 3, _QCL_TT_EOF, r, c, lexer.fp);
         _qcl_lexer_append(&lexer, t);
+
+        //symmap_destroy(&symmap);
 
         return lexer;
 }
