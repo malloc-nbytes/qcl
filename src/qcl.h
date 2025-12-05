@@ -269,14 +269,16 @@ _qcl_arena_free(_qcl_arena *a)
 
 #define QCL_KWD_NULL  "null"
 #define QCL_KWD_IF    "if"
+#define QCL_KWD_ELSE  "else"
 #define QCL_KWD_TRUE  "true"
 #define QCL_KWD_FALSE "false"
 #define QCL_KWD_CL {   \
         QCL_KWD_NULL,  \
         QCL_KWD_IF,    \
+        QCL_KWD_ELSE,  \
         QCL_KWD_TRUE,  \
         QCL_KWD_FALSE, \
-        NULL,         \
+        NULL,          \
 }
 
 static int
@@ -309,6 +311,7 @@ typedef enum {
         _QCL_TT_COLON,
         _QCL_TT_PLUS,
         _QCL_TT_NEWLINE,
+        _QCL_TT_DOLLAR,
 } _qcl_tt;
 
 typedef struct {
@@ -493,6 +496,9 @@ _qcl_lex_file(const char *fp,
         symmap_insert(&symmap, "[", _QCL_TT_LSQR);
         symmap_insert(&symmap, "]", _QCL_TT_RSQR);
         symmap_insert(&symmap, ",", _QCL_TT_COMMA);
+        symmap_insert(&symmap, "{", _QCL_TT_LCURLY);
+        symmap_insert(&symmap, "}", _QCL_TT_RCURLY);
+        symmap_insert(&symmap, "$", _QCL_TT_DOLLAR);
 
         size_t r = 1, c = 1, i = 0;
         while (src[i]) {
@@ -601,11 +607,14 @@ typedef struct _qcl_expr _qcl_expr;
 typedef struct _qcl_stmt _qcl_stmt;
 
 typedef struct _qcl_visitor _qcl_visitor;
+static void *_qcl_accept_expr_env(_qcl_expr *rhs, _qcl_visitor *v);
 static void *_qcl_accept_expr_string(_qcl_expr *e, _qcl_visitor *v);
 static void *_qcl_accept_expr_identifier(_qcl_expr *e, _qcl_visitor *v);
 static void *_qcl_accept_expr_list(_qcl_expr *e, _qcl_visitor *v);
 static void *_qcl_accept_expr_bool(_qcl_expr *e, _qcl_visitor *v);
 static void *_qcl_accept_stmt_assigment(_qcl_stmt *s, _qcl_visitor *v);
+static void *_qcl_accept_stmt_if(_qcl_stmt *s, _qcl_visitor *v);
+static void *_qcl_accept_stmt_block(_qcl_stmt *s, _qcl_visitor *v);
 
 typedef enum {
         _QCL_TYPE_STRING = 0,
@@ -626,9 +635,10 @@ typedef struct {
 typedef enum {
         _QCL_EXPR_KIND_IDENTIFIER,
         _QCL_EXPR_KIND_STRING,
-        _QCL_EXPR_KIND_IF,
         _QCL_EXPR_KIND_LIST,
         _QCL_EXPR_KIND_BOOL,
+        _QCL_EXPR_KIND_IF,
+        _QCL_EXPR_KIND_ENV,
 } _qcl_expr_kind;
 
 typedef struct _qcl_expr {
@@ -659,6 +669,25 @@ typedef struct {
         _qcl_expr base;
         int       b;
 } _qcl_expr_bool;
+
+typedef struct {
+        _qcl_expr base;
+        _qcl_expr *rhs;
+} _qcl_expr_env;
+
+static _qcl_expr_env *
+_qcl_expr_env_alloc(_qcl_expr *rhs)
+{
+        _qcl_expr_env *expr =
+                (_qcl_expr_env *)malloc(sizeof(_qcl_expr_env));
+        expr->rhs = rhs;
+        expr->base = (_qcl_expr) {
+                .kind = _QCL_EXPR_KIND_ENV,
+                .loc  = {0},
+        };
+        expr->base.accept = _qcl_accept_expr_env;
+        return expr;
+}
 
 static _qcl_expr_string *
 _qcl_expr_string_alloc(const char *s)
@@ -721,8 +750,10 @@ _qcl_expr_bool_alloc(int b)
 // ########################
 
 typedef enum {
-        QCL_STMT_KIND_ASSIGNMENT = 0,
-        QCL_STMT_KIND_EXPR,
+        _QCL_STMT_KIND_ASSIGNMENT = 0,
+        _QCL_STMT_KIND_EXPR,
+        _QCL_STMT_KIND_IF,
+        _QCL_STMT_KIND_BLOCK,
 } _qcl_stmt_kind;
 
 typedef struct _qcl_stmt {
@@ -730,6 +761,8 @@ typedef struct _qcl_stmt {
         _qcl_loc       loc;
         void *(*accept)(struct _qcl_stmt *s, _qcl_visitor *v);
 } _qcl_stmt;
+
+QCL_ARRAY_TYPE(_qcl_stmt *, _qcl_stmt_array);
 
 typedef struct {
         _qcl_stmt    base;
@@ -742,6 +775,18 @@ typedef struct {
         _qcl_expr *expr;
 } _qcl_stmt_expr;
 
+typedef struct {
+        _qcl_stmt       base;
+        _qcl_stmt_array stmts;
+} _qcl_stmt_block;
+
+typedef struct {
+        _qcl_stmt base;
+        _qcl_expr *cond;
+        _qcl_stmt *then;
+        _qcl_stmt *else_; // can be NULL
+} _qcl_stmt_if;
+
 static _qcl_stmt_assignment *
 _qcl_stmt_assignment_alloc(const char *id,
                            _qcl_expr  *expr)
@@ -751,10 +796,42 @@ _qcl_stmt_assignment_alloc(const char *id,
         s->id   = id;
         s->expr = expr;
         s->base = (_qcl_stmt) {
-                .kind = QCL_STMT_KIND_ASSIGNMENT,
+                .kind = _QCL_STMT_KIND_ASSIGNMENT,
                 .loc  = {0},
         };
         s->base.accept = _qcl_accept_stmt_assigment;
+        return s;
+}
+
+static _qcl_stmt_if *
+_qcl_stmt_if_alloc(_qcl_expr *cond,
+                   _qcl_stmt *then,
+                   _qcl_stmt *else_)
+{
+        _qcl_stmt_if *s =
+                (_qcl_stmt_if *)malloc(sizeof(_qcl_stmt_if));
+        s->cond  = cond;
+        s->then  = then;
+        s->else_ = else_;
+        s->base = (_qcl_stmt) {
+                .kind = _QCL_STMT_KIND_IF,
+                .loc  = {0},
+        };
+        s->base.accept = _qcl_accept_stmt_if;
+        return s;
+}
+
+static _qcl_stmt_block *
+_qcl_stmt_block_alloc(_qcl_stmt_array stmts)
+{
+        _qcl_stmt_block *s =
+                (_qcl_stmt_block *)malloc(sizeof(_qcl_stmt_block));
+        s->stmts  = stmts;
+        s->base = (_qcl_stmt) {
+                .kind = _QCL_STMT_KIND_BLOCK,
+                .loc  = {0},
+        };
+        s->base.accept = _qcl_accept_stmt_block;
         return s;
 }
 
@@ -762,14 +839,14 @@ _qcl_stmt_assignment_alloc(const char *id,
 // # PARSING           #
 // #####################
 
-QCL_ARRAY_TYPE(_qcl_stmt *, _qcl_stmt_array);
-
 typedef struct {
         _qcl_stmt_array stmts;
 } _qcl_program;
 
 #define _QCL_SP(l, i) \
         _qcl_lexer_peek(l, i) && _qcl_lexer_peek(l, i)
+
+static _qcl_stmt *_qcl_parse_stmt(_qcl_lexer *lexer);
 
 static _qcl_token *
 _qcl_expect(_qcl_lexer *lexer,
@@ -827,6 +904,10 @@ _qcl_parse_primary_expr(_qcl_lexer *lexer)
                         _qcl_expr_array exprs = _qcl_parse_comma_sep_exprs(lexer);
                         expr = (_qcl_expr *)_qcl_expr_list_alloc(exprs);
                         expr->loc = hd->loc;
+                } break;
+                case _QCL_TT_DOLLAR: {
+                        (void)_qcl_lexer_next(lexer); // $
+                        expr = (_qcl_expr *)_qcl_expr_env_alloc(_qcl_parse_expr(lexer));
                 } break;
                 case _QCL_TT_KEYWORD: {
                         if (!strcmp(hd->lx, QCL_KWD_TRUE)) {
@@ -888,10 +969,66 @@ _qcl_parse_stmt_expr(_qcl_lexer *lexer)
         assert(0);
 }
 
+static _qcl_stmt_if *
+_qcl_parse_stmt_if(_qcl_lexer *lexer)
+{
+        _qcl_expr  *e;
+        _qcl_stmt  *then;
+        _qcl_stmt  *else_;
+        _qcl_token *t1;
+        _qcl_token *t2;
+        int         t1_else;
+        int         t2_if;
+
+        (void)_qcl_lexer_next(lexer); // if
+
+        e     = _qcl_parse_expr(lexer);
+        then  = _qcl_parse_stmt(lexer);
+        else_ = NULL;
+
+        t1 = _qcl_lexer_peek(lexer, 0);
+        t2 = _qcl_lexer_peek(lexer, 1);
+
+        t1_else = t1 && t1->ty == _QCL_TT_KEYWORD && !strcmp(t1->lx, QCL_KWD_ELSE);
+        t2_if   = t2 && t2->ty == _QCL_TT_KEYWORD && !strcmp(t2->lx, QCL_KWD_IF);
+
+        if (t1_else && t2_if) {
+                (void)_qcl_lexer_next(lexer); // else
+                else_ = (_qcl_stmt *)_qcl_parse_stmt_if(lexer);
+        } else if (t1_else) {
+                _qcl_lexer_next(lexer); // else
+                else_ = _qcl_parse_stmt(lexer);
+        }
+
+        return _qcl_stmt_if_alloc(e, then, else_);
+}
+
 static _qcl_stmt *
 _qcl_parse_stmt_keyword(_qcl_lexer *lexer)
 {
-        assert(0);
+        _qcl_token *hd = _qcl_lexer_peek(lexer, 0);
+
+        if (!strcmp(hd->lx, QCL_KWD_IF)) {
+                return (_qcl_stmt *)_qcl_parse_stmt_if(lexer);
+        } else {
+                assert(0 && "unimplemented");
+        }
+}
+
+static _qcl_stmt_block *
+_qcl_parse_stmt_block(_qcl_lexer *lexer)
+{
+        _qcl_stmt_array ar = qcl_array_empty(_qcl_stmt_array);
+
+        (void)_qcl_expect(lexer, _QCL_TT_LCURLY);
+
+        while (_QCL_SP(lexer, 0)->ty != _QCL_TT_RCURLY) {
+                qcl_array_append(ar, _qcl_parse_stmt(lexer));
+        }
+
+        (void)_qcl_expect(lexer, _QCL_TT_RCURLY);
+
+        return _qcl_stmt_block_alloc(ar);
 }
 
 static _qcl_stmt *
@@ -901,11 +1038,18 @@ _qcl_parse_stmt(_qcl_lexer *lexer)
 
         if (!(hd = _qcl_lexer_peek(lexer, 0))) return NULL;
 
+        if (hd->ty == _QCL_TT_NEWLINE) {
+                (void)_qcl_lexer_next(lexer); // '\n'
+                return _qcl_parse_stmt(lexer);
+        }
+
         if (hd->ty == _QCL_TT_KEYWORD) {
                 return _qcl_parse_stmt_keyword(lexer);
         } else if (hd->ty == _QCL_TT_IDENTIFIER
                    && _QCL_SP(lexer, 1)->ty == _QCL_TT_EQUALS) {
                 return (_qcl_stmt *)_qcl_parse_stmt_assignment(lexer);
+        } else if (hd->ty == _QCL_TT_LCURLY) {
+                return (_qcl_stmt *)_qcl_parse_stmt_block(lexer);
         } else {
                 return (_qcl_stmt *)_qcl_parse_stmt_expr(lexer);
         }
@@ -939,7 +1083,10 @@ typedef void *(*_qcl_visit_expr_string_sig)(_qcl_visitor *v, _qcl_expr_string *s
 typedef void *(*_qcl_visit_expr_identifier_sig)(_qcl_visitor *v, _qcl_expr_identifier *s);
 typedef void *(*_qcl_visit_expr_list_sig)(_qcl_visitor *v, _qcl_expr_list *s);
 typedef void *(*_qcl_visit_expr_bool_sig)(_qcl_visitor *v, _qcl_expr_bool *s);
+typedef void *(*_qcl_visit_expr_env_sig)(_qcl_visitor *v, _qcl_expr_env *s);
 typedef void *(*_qcl_visit_stmt_assignment_sig)(_qcl_visitor *v, _qcl_stmt_assignment *s);
+typedef void *(*_qcl_visit_stmt_if_sig)(_qcl_visitor *v, _qcl_stmt_if *s);
+typedef void *(*_qcl_visit_stmt_block_sig)(_qcl_visitor *v, _qcl_stmt_block *s);
 
 typedef struct _qcl_visitor {
         void *context;
@@ -949,9 +1096,12 @@ typedef struct _qcl_visitor {
         _qcl_visit_expr_identifier_sig visit_expr_identifier;
         _qcl_visit_expr_list_sig       visit_expr_list;
         _qcl_visit_expr_bool_sig       visit_expr_bool;
+        _qcl_visit_expr_env_sig        visit_expr_env;
 
         // Statements
         _qcl_visit_stmt_assignment_sig visit_stmt_assignment;
+        _qcl_visit_stmt_if_sig         visit_stmt_if;
+        _qcl_visit_stmt_block_sig      visit_stmt_block;
 } _qcl_visitor;
 
 static _qcl_visitor *
@@ -960,19 +1110,35 @@ _qcl_visitor_alloc(void                           *context,
                    _qcl_visit_expr_identifier_sig  visit_expr_identifier,
                    _qcl_visit_expr_list_sig        visit_expr_list,
                    _qcl_visit_expr_bool_sig        visit_expr_bool,
-                   _qcl_visit_stmt_assignment_sig  visit_stmt_assignment)
+                   _qcl_visit_expr_env_sig         visit_expr_env,
+                   _qcl_visit_stmt_assignment_sig  visit_stmt_assignment,
+                   _qcl_visit_stmt_if_sig          visit_stmt_if,
+                   _qcl_visit_stmt_block_sig       visit_stmt_block)
 {
         _qcl_visitor *v = (_qcl_visitor *)malloc(sizeof(_qcl_visitor));
 
         v->context = context;
 
-        v->visit_stmt_assignment = visit_stmt_assignment;
         v->visit_expr_identifier = visit_expr_identifier;
         v->visit_expr_list       = visit_expr_list;
         v->visit_expr_bool       = visit_expr_bool;
         v->visit_expr_string     = visit_expr_string;
+        v->visit_expr_env        = visit_expr_env;
 
-        return v ;
+        v->visit_stmt_assignment = visit_stmt_assignment;
+        v->visit_stmt_if         = visit_stmt_if;
+        v->visit_stmt_block      = visit_stmt_block;
+
+        return v;
+}
+
+static void *
+_qcl_accept_expr_env(_qcl_expr *e, _qcl_visitor *v)
+{
+        if (v->visit_expr_env) {
+                return v->visit_expr_env(v, (_qcl_expr_env *)e);
+        }
+        return NULL;
 }
 
 static void *
@@ -1015,10 +1181,31 @@ _qcl_accept_expr_bool(_qcl_expr    *e,
 }
 
 static void *
-_qcl_accept_stmt_assigment(_qcl_stmt *s, _qcl_visitor *v)
+_qcl_accept_stmt_assigment(_qcl_stmt    *s,
+                           _qcl_visitor *v)
 {
         if (v->visit_stmt_assignment) {
                 return v->visit_stmt_assignment(v, (_qcl_stmt_assignment *)s);
+        }
+        return NULL;
+}
+
+static void *
+_qcl_accept_stmt_if(_qcl_stmt    *s,
+                    _qcl_visitor *v)
+{
+        if (v->visit_stmt_if) {
+                return v->visit_stmt_if(v, (_qcl_stmt_if *)s);
+        }
+        return NULL;
+}
+
+static void *
+_qcl_accept_stmt_block(_qcl_stmt    *s,
+                       _qcl_visitor *v)
+{
+        if (v->visit_stmt_block) {
+                return v->visit_stmt_block(v, (_qcl_stmt_block *)s);
         }
         return NULL;
 }
@@ -1056,6 +1243,24 @@ static qcl_value_string *qcl_value_string_alloc(const char *s);
 static qcl_value_list   *qcl_value_list_alloc(qcl_value_array values);
 static qcl_value_bool   *qcl_value_bool_alloc(int b);
 
+static qcl_value_bool *
+_qcl_value_istruthy(const qcl_value *v)
+{
+        int b = 0;
+
+        if (v->kind == QCL_VALUE_KIND_STRING) {
+                b = strlen(((qcl_value_string *)v)->s) > 0;
+        } else if (v->kind == QCL_VALUE_KIND_BOOL) {
+                b = ((qcl_value_bool *)v)->b;
+        } else if (v->kind == QCL_VALUE_KIND_LIST) {
+                b = ((qcl_value_list *)v)->values.len > 0;
+        } else {
+                assert(0 && "unimplemented");
+        }
+
+        return qcl_value_bool_alloc(b);
+}
+
 static qcl_value *
 _qcl_value_copy(const qcl_value *v)
 {
@@ -1068,6 +1273,8 @@ _qcl_value_copy(const qcl_value *v)
                         qcl_array_append(ar, _qcl_value_copy(lst->values.data[i]));
                 }
                 return (qcl_value *)qcl_value_list_alloc(ar);
+        } else if (v->kind == QCL_VALUE_KIND_BOOL) {
+                return (qcl_value *)qcl_value_bool_alloc(((qcl_value_bool *)v)->b);
         } else {
                 assert(0 && "unimplemented");
         }
@@ -1126,7 +1333,32 @@ _qcl_interpret_visit_stmt_assignment(_qcl_visitor         *v,
         _qcl_interpret_context *ctx = (_qcl_interpret_context *)v->context;
         qcl_value *value = (qcl_value *)s->expr->accept(s->expr, v);
         symtbl_insert(&ctx->tbl, s->id, value);
+        return NULL;
+}
 
+static void *
+_qcl_interpret_visit_stmt_if(_qcl_visitor *v,
+                             _qcl_stmt_if *s)
+{
+        qcl_value *e = s->cond->accept(s->cond, v);
+        qcl_value_bool *b = _qcl_value_istruthy(e);
+
+        if (b->b) {
+                s->then->accept(s->then, v);
+        } else if (s->else_) {
+                s->else_->accept(s->else_, v);
+        }
+
+        return NULL;
+}
+
+static void *
+_qcl_interpret_visit_stmt_block(_qcl_visitor    *v,
+                                _qcl_stmt_block *s)
+{
+        for (size_t i = 0; i < s->stmts.len; ++i) {
+                s->stmts.data[i]->accept(s->stmts.data[i], v);
+        }
         return NULL;
 }
 
@@ -1179,6 +1411,17 @@ _qcl_interpret_visit_expr_bool(_qcl_visitor   *v,
         return qcl_value_bool_alloc(e->b);
 }
 
+static void *
+_qcl_interpret_visit_expr_env(_qcl_visitor   *v,
+                              _qcl_expr_env *e)
+{
+        qcl_value *var = e->rhs->accept(e->rhs, v);
+        assert(var->kind == QCL_VALUE_KIND_STRING);
+        char *env = getenv(((qcl_value_string *)var)->s);
+        if (env) return qcl_value_string_alloc(strdup(env));
+        return qcl_value_string_alloc("");
+}
+
 static _qcl_visitor *
 _interpreter_visitor_alloc(_qcl_interpret_context *ctx)
 {
@@ -1187,7 +1430,10 @@ _interpreter_visitor_alloc(_qcl_interpret_context *ctx)
                                   _qcl_interpret_visit_expr_identifier,
                                   _qcl_interpret_visit_expr_list,
                                   _qcl_interpret_visit_expr_bool,
-                                  _qcl_interpret_visit_stmt_assignment);
+                                  _qcl_interpret_visit_expr_env,
+                                  _qcl_interpret_visit_stmt_assignment,
+                                  _qcl_interpret_visit_stmt_if,
+                                  _qcl_interpret_visit_stmt_block);
 }
 
 static _qcl_interpret_context

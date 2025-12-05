@@ -6,9 +6,9 @@ main(void)
 {
         qcl_config config = qcl_parse_file("input.qcl");
 
-        qcl_value *v = qcl_value_get(&config, "f");
+        qcl_value *v = qcl_value_get(&config, "home");
 
-        printf("%d\n", ((qcl_value_bool *)v)->b);
+        printf("%s\n", ((qcl_value_string *)v)->s);
 
         return 0;
 }
