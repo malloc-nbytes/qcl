@@ -1,5 +1,3 @@
-home = $'fjdsklafjdask'
+home = $"HOME";
 
-if home {
-    
-}
+if !home: home = "/";
