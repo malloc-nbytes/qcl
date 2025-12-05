@@ -1,3 +1,1 @@
-home = $"HOME";
-
-if !home: home = "/";
+x = 'a' + 'b' + 'c';
