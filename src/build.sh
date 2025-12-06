@@ -2,4 +2,8 @@
 
 set -xe
 
-cc -o main main.c -ggdb -O0
+echo '#define QCL_IMPL
+#include "qcl.h"
+int main(void) {
+return 0;
+}' | cc -x c - -o main -ggdb -O0

@@ -1,2 +1,1 @@
-x = "hello"
-
+lst = "hello" + "world" + "foo";

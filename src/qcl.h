@@ -30,6 +30,16 @@
  *   Impl map_destroy() to map macro code gen.
  */
 
+/*** Available Interface ***
+
+qcl_config qcl_parse_file(const char *fp);
+qcl_value *qcl_value_get(qcl_config *config, const char *var);
+char **qcl_value_flatten(qcl_config *config, const char *var);
+
+***************************/
+
+
+
 #ifndef QCL_INCLUDED_H
 #define QCL_INCLUDED_H
 
@@ -1539,15 +1549,10 @@ static void *
 _qcl_interpret_visit_expr_binary(_qcl_visitor     *v,
                                  _qcl_expr_binary *e)
 {
-        // TODO: adding strings like:
-        //         'a' + 'b' + 'c'
-        //       results in a segfault.
-        //       But doing 'a' + 'b' is fine.
-
         assert(!strcmp(e->op, "+"));
 
         qcl_value *lhs = e->lhs->accept(e->lhs, v);
-        qcl_value *rhs = e->lhs->accept(e->rhs, v);
+        qcl_value *rhs = e->rhs->accept(e->rhs, v);
 
         if (lhs->kind == QCL_VALUE_KIND_STRING
             && rhs->kind == QCL_VALUE_KIND_STRING) {
@@ -1633,21 +1638,41 @@ qcl_value_get(qcl_config *config,
 }
 
 static void
-_qcl_flatten_value(qcl_str_array   *ar,
+_qcl_value_flatten(qcl_str_array   *ar,
                    const qcl_value *value)
 {
-        assert(0);
+        if (value->kind == QCL_VALUE_KIND_STRING) {
+                qcl_array_append(*ar, strdup(((qcl_value_string *)value)->s));
+                return;
+        }
+
+        qcl_value_list *lst = (qcl_value_list *)value;
+        for (size_t i = 0; i < lst->values.len; ++i) {
+                _qcl_value_flatten(ar, lst->values.data[i]);
+        }
 }
 
+// NOTE: The caller of this function is responsible
+//       for performing free(ar[0 .. ar.len-1]) and free(ar).
+//       It is guaranteed that the array will always be
+//       at least 1 in length and the last element in the
+//       array will be NULL.
 static char **
-qcl_value_as_list(qcl_config *config,
+qcl_value_flatten(qcl_config *config,
                   const char *var)
 {
-        qcl_str_array  ar    = qcl_array_empty(qcl_str_array);
-        qcl_value     *value = *(qcl_value **)symtbl_get(&config->interpreter.tbl, var);
+        qcl_str_array ar = qcl_array_empty(qcl_str_array);
 
-        _qcl_flatten_value(&ar, value);
+        if (!symtbl_contains(&config->interpreter.tbl, var)) {
+                goto done;
+        }
 
+        qcl_value *value = *(qcl_value **)symtbl_get(&config->interpreter.tbl, var);
+        if (value) {
+                _qcl_value_flatten(&ar, value);
+        }
+
+ done:
         qcl_array_append(ar, NULL);
         return ar.data;
 }
