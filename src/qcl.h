@@ -188,6 +188,8 @@
                 (da).len--;                                             \
         } while (0)
 
+QCL_ARRAY_TYPE(char *, qcl_str_array);
+
 // ####################
 // # ARENA            #
 // ####################
@@ -1042,12 +1044,6 @@ _qcl_parse_stmt_assignment(_qcl_lexer *lexer)
         return _qcl_stmt_assignment_alloc(id, expr);
 }
 
-/* static _qcl_stmt_expr * */
-/* _qcl_parse_stmt_expr(_qcl_lexer *lexer) */
-/* { */
-/*         assert(0); */
-/* } */
-
 static _qcl_stmt_if *
 _qcl_parse_stmt_if(_qcl_lexer *lexer)
 {
@@ -1574,9 +1570,6 @@ _qcl_interpret_visit_expr_binary(_qcl_visitor     *v,
                 // TODO: type check error
                 assert(0 && "wrong types unimplemented");
         }
-
-        int x = 1;
-        let x: int = 1;
 }
 
 static _qcl_visitor *
@@ -1637,6 +1630,26 @@ qcl_value_get(qcl_config *config,
 {
         if (!symtbl_contains(&config->interpreter.tbl, var)) return NULL;
         return *(qcl_value **)symtbl_get(&config->interpreter.tbl, var);
+}
+
+static void
+_qcl_flatten_value(qcl_str_array   *ar,
+                   const qcl_value *value)
+{
+        assert(0);
+}
+
+static char **
+qcl_value_as_list(qcl_config *config,
+                  const char *var)
+{
+        qcl_str_array  ar    = qcl_array_empty(qcl_str_array);
+        qcl_value     *value = *(qcl_value **)symtbl_get(&config->interpreter.tbl, var);
+
+        _qcl_flatten_value(&ar, value);
+
+        qcl_array_append(ar, NULL);
+        return ar.data;
 }
 
 #endif // QCL_IMPL
