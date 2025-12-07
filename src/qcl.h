@@ -1696,6 +1696,9 @@ _qcl_value_flatten(qcl_str_array   *ar,
         if (value->kind == QCL_VALUE_KIND_STRING) {
                 qcl_array_append(*ar, strdup(((qcl_value_string *)value)->s));
                 return;
+        } else if (value->kind == QCL_VALUE_KIND_BOOL) {
+                char *s = ((qcl_value_bool *)value)->b ? "true" : "false";
+                qcl_array_append(*ar, strdup(s));
         }
 
         qcl_value_list *lst = (qcl_value_list *)value;
