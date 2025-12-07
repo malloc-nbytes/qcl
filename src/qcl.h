@@ -30,16 +30,6 @@
  *   Impl map_destroy() to map macro code gen.
  */
 
-/*** Available Interface ***
-
-qcl_config qcl_parse_file(const char *fp);
-qcl_value *qcl_value_get(qcl_config *config, const char *var);
-char **qcl_value_flatten(qcl_config *config, const char *var);
-
-***************************/
-
-
-
 #ifndef QCL_INCLUDED_H
 #define QCL_INCLUDED_H
 
@@ -333,6 +323,11 @@ typedef struct {
         const char *fp;
 } _qcl_loc;
 
+typedef struct {
+        const char *msg;
+        _qcl_loc loc;
+} _qcl_err;
+
 typedef struct _qcl_token {
         char              *lx;
         _qcl_tt            ty;
@@ -341,14 +336,11 @@ typedef struct _qcl_token {
 } _qcl_token;
 
 typedef struct {
-        _qcl_token *hd;
-        _qcl_token *tl;
-        const char *fp;
-        struct {
-                const char *msg;
-                _qcl_loc    loc;
-        } err;
-        _qcl_arena tarena;
+        _qcl_token      *hd;
+        _qcl_token      *tl;
+        const char      *fp;
+        _qcl_err         err;
+        _qcl_arena       tarena;
 } _qcl_lexer;
 
 static _qcl_token *
@@ -905,84 +897,104 @@ typedef struct {
         _qcl_stmt_array stmts;
 } _qcl_program;
 
+typedef struct {
+        _qcl_lexer   *l;
+        _qcl_program  p;
+        _qcl_err      err;
+} _qcl_parser;
+
 #define _QCL_SP(l, i) \
         _qcl_lexer_peek(l, i) && _qcl_lexer_peek(l, i)
 
-static _qcl_stmt *_qcl_parse_stmt(_qcl_lexer *lexer);
+static _qcl_stmt *_qcl_parse_stmt(_qcl_parser *parser);
 
 static _qcl_token *
-_qcl_expect(_qcl_lexer *lexer,
-            _qcl_tt     ty)
+_qcl_expect(_qcl_parser *parser,
+            _qcl_tt      ty)
 {
-        _qcl_token *it = _qcl_lexer_next(lexer);
-        if (!it || it->ty != ty) return NULL;
+        _qcl_token *it = _qcl_lexer_next(parser->l);
+        if (!it || it->ty != ty) {
+                if (it)
+                        parser->err.loc = it->loc;
+                parser->err.msg = "invalid syntax";
+                return NULL;
+        }
         return it;
 }
 
-static _qcl_expr *_qcl_parse_expr(_qcl_lexer *lexer);
+static _qcl_expr *_qcl_parse_expr(_qcl_parser *parser);
 
 static _qcl_expr_array
-_qcl_parse_comma_sep_exprs(_qcl_lexer *lexer)
+_qcl_parse_comma_sep_exprs(_qcl_parser *parser)
 {
         _qcl_expr_array ar = qcl_array_empty(_qcl_expr_array);
 
         while (1) {
-                _qcl_expr *e = _qcl_parse_expr(lexer);
+                _qcl_expr *e = _qcl_parse_expr(parser);
                 if (!e) break;
                 qcl_array_append(ar, e);
 
-                if (_QCL_SP(lexer, 0)->ty == _QCL_TT_COMMA) {
-                        (void)_qcl_lexer_next(lexer);
+                if (_QCL_SP(parser->l, 0)->ty == _QCL_TT_COMMA) {
+                        (void)_qcl_lexer_next(parser->l);
                 } else {
                         break;
                 }
         }
 
-        (void)_qcl_expect(lexer, _QCL_TT_RSQR);
+        if (!_qcl_expect(parser, _QCL_TT_RSQR)) {
+                qcl_array_free(ar);
+                ar.data = NULL;
+        }
 
         return ar;
 }
 
 static _qcl_expr *
-_qcl_parse_primary_expr(_qcl_lexer *lexer)
+_qcl_parse_primary_expr(_qcl_parser *parser)
 {
         _qcl_expr *expr = NULL;
 
         while (1) {
-                _qcl_token *hd = _qcl_lexer_peek(lexer, 0);
+                _qcl_token *hd = _qcl_lexer_peek(parser->l, 0);
                 if (!hd) return expr;
 
                 switch (hd->ty) {
                 case _QCL_TT_IDENTIFIER: {
-                        expr = (_qcl_expr *)_qcl_expr_identifier_alloc(_qcl_lexer_next(lexer)->lx);
+                        expr = (_qcl_expr *)_qcl_expr_identifier_alloc(_qcl_lexer_next(parser->l)->lx);
                         expr->loc = hd->loc;
                 } break;
                 case _QCL_TT_STRING: {
-                        expr = (_qcl_expr *)_qcl_expr_string_alloc(_qcl_lexer_next(lexer)->lx);
+                        expr = (_qcl_expr *)_qcl_expr_string_alloc(_qcl_lexer_next(parser->l)->lx);
                         expr->loc = hd->loc;
                 } break;
                 case _QCL_TT_LSQR: {
-                        (void)_qcl_lexer_next(lexer);
-                        _qcl_expr_array exprs = _qcl_parse_comma_sep_exprs(lexer);
+                        (void)_qcl_lexer_next(parser->l);
+                        _qcl_expr_array exprs = _qcl_parse_comma_sep_exprs(parser);
+                        if (!exprs.data) {
+                                parser->err.msg = "invalid expression list";
+                                parser->err.loc = hd->loc;
+                                return NULL;
+                        }
                         expr = (_qcl_expr *)_qcl_expr_list_alloc(exprs);
                         expr->loc = hd->loc;
                 } break;
                 case _QCL_TT_DOLLAR: {
-                        (void)_qcl_lexer_next(lexer); // $
-                        _qcl_expr *rhs = _qcl_parse_expr(lexer);
+                        (void)_qcl_lexer_next(parser->l); // $
+                        _qcl_expr *rhs = _qcl_parse_expr(parser);
+                        if (!rhs) return NULL;
                         expr = (_qcl_expr *)_qcl_expr_env_alloc(rhs);
                 } break;
                 case _QCL_TT_COLON: {
-                        (void)_qcl_lexer_next(lexer); // :
+                        (void)_qcl_lexer_next(parser->l); // :
                         return expr;
                 } break;
                 case _QCL_TT_KEYWORD: {
                         if (!strcmp(hd->lx, QCL_KWD_TRUE)) {
-                                (void)_qcl_lexer_next(lexer);
+                                (void)_qcl_lexer_next(parser->l);
                                 expr = (_qcl_expr *)_qcl_expr_bool_alloc(1);
                                 expr->loc = hd->loc;
                         } else if (!strcmp(hd->lx, QCL_KWD_FALSE)) {
-                                (void)_qcl_lexer_next(lexer);
+                                (void)_qcl_lexer_next(parser->l);
                                 expr = (_qcl_expr *)_qcl_expr_bool_alloc(0);
                                 expr->loc = hd->loc;
                         } else {
@@ -997,65 +1009,76 @@ _qcl_parse_primary_expr(_qcl_lexer *lexer)
 }
 
 _qcl_expr *
-_qcl_parse_unary_expr(_qcl_lexer *lexer)
+_qcl_parse_unary_expr(_qcl_parser *parser)
 {
-        _qcl_token *cur = _qcl_lexer_peek(lexer, 0);
+        _qcl_token *cur = _qcl_lexer_peek(parser->l, 0);
         if (cur && (cur->ty == _QCL_TT_BANG)) {
-                _qcl_token *loc_tok     = _qcl_lexer_next(lexer);
-                const char *op          = loc_tok->lx;
-                _qcl_expr  *rhs         = (_qcl_expr *)_qcl_parse_unary_expr(lexer);
+                _qcl_token *loc_tok;
+                const char *op;
+                _qcl_expr  *rhs;
+
+                loc_tok = _qcl_lexer_next(parser->l);
+                op = loc_tok->lx;
+                if (!(rhs = (_qcl_expr *)_qcl_parse_unary_expr(parser))) {
+                        return NULL;
+                }
                 ((_qcl_expr *)rhs)->loc = loc_tok->loc;
                 return (_qcl_expr *)_qcl_expr_unary_alloc(op, rhs);
         }
-        return _qcl_parse_primary_expr(lexer);
+        return _qcl_parse_primary_expr(parser);
 }
 
 static _qcl_expr *
-_qcl_parse_additive_expr(_qcl_lexer *lexer)
+_qcl_parse_additive_expr(_qcl_parser *parser)
 {
-        _qcl_expr  *lhs = _qcl_parse_unary_expr(lexer);
-        _qcl_token *cur = _qcl_lexer_peek(lexer, 0);
+        _qcl_expr  *lhs;
+        _qcl_token *cur;
+
+        if (!(lhs = _qcl_parse_unary_expr(parser))) return NULL;
+        if (!(cur = _qcl_lexer_peek(parser->l, 0))) return NULL;
         while (cur && (cur->ty == _QCL_TT_PLUS)) {
-                _qcl_token       *loc_tok = _qcl_lexer_next(lexer);
-                const char       *op      = loc_tok->lx;
-                _qcl_expr        *rhs     = _qcl_parse_unary_expr(lexer);
-                _qcl_expr_binary *bin     = _qcl_expr_binary_alloc(lhs, op, rhs);
-                ((_qcl_expr *)bin)->loc   = lhs->loc;
-                lhs                       = (_qcl_expr *)bin;
-                cur                       = _qcl_lexer_peek(lexer, 0);
+                _qcl_token       *loc_tok;
+                const char       *op;
+                _qcl_expr        *rhs;
+                _qcl_expr_binary *bin;
+
+                loc_tok = _qcl_lexer_next(parser->l);
+                op      = loc_tok->lx;
+
+                if (!(rhs = _qcl_parse_unary_expr(parser))) return NULL;
+                if (!(bin = _qcl_expr_binary_alloc(lhs, op, rhs))) return NULL;
+
+                ((_qcl_expr *)bin)->loc = lhs->loc;
+                lhs = (_qcl_expr *)bin;
+                cur = _qcl_lexer_peek(parser->l, 0);
         }
         return lhs;
 }
 
 static _qcl_expr *
-_qcl_parse_expr(_qcl_lexer *lexer)
+_qcl_parse_expr(_qcl_parser *parser)
 {
-        return _qcl_parse_additive_expr(lexer);
+        return _qcl_parse_additive_expr(parser);
 }
 
 static _qcl_stmt_assignment *
-_qcl_parse_stmt_assignment(_qcl_lexer *lexer)
+_qcl_parse_stmt_assignment(_qcl_parser *parser)
 {
         const char *id;
         _qcl_expr  *expr;
 
-        if (!(id = _qcl_expect(lexer, _QCL_TT_IDENTIFIER)->lx)) {
+        if (!(id = _qcl_expect(parser, _QCL_TT_IDENTIFIER)->lx)) {
                 return NULL;
         }
-
-        (void)_qcl_expect(lexer, _QCL_TT_EQUALS);
-
-        if (!(expr = _qcl_parse_expr(lexer))) {
-                return NULL;
-        }
-
-        (void)_qcl_expect(lexer, _QCL_TT_SEMICOLON);
+        if (!(_qcl_expect(parser, _QCL_TT_EQUALS))) return NULL;
+        if (!(expr = _qcl_parse_expr(parser))) return NULL;
+        if (!(_qcl_expect(parser, _QCL_TT_SEMICOLON))) return NULL;
 
         return _qcl_stmt_assignment_alloc(id, expr);
 }
 
 static _qcl_stmt_if *
-_qcl_parse_stmt_if(_qcl_lexer *lexer)
+_qcl_parse_stmt_if(_qcl_parser *parser)
 {
         _qcl_expr  *e;
         _qcl_stmt  *then;
@@ -1065,63 +1088,78 @@ _qcl_parse_stmt_if(_qcl_lexer *lexer)
         int         t1_else;
         int         t2_if;
 
-        (void)_qcl_lexer_next(lexer); // if
+        (void)_qcl_lexer_next(parser->l); // if
 
-        e     = _qcl_parse_expr(lexer);
-        then  = _qcl_parse_stmt(lexer);
+        if (!(e = _qcl_parse_expr(parser))) return NULL;
+        if (!(then  = _qcl_parse_stmt(parser))) return NULL;
         else_ = NULL;
 
-        t1 = _qcl_lexer_peek(lexer, 0);
-        t2 = _qcl_lexer_peek(lexer, 1);
+        t1 = _qcl_lexer_peek(parser->l, 0);
+        t2 = _qcl_lexer_peek(parser->l, 1);
 
         t1_else = t1 && t1->ty == _QCL_TT_KEYWORD && !strcmp(t1->lx, QCL_KWD_ELSE);
         t2_if   = t2 && t2->ty == _QCL_TT_KEYWORD && !strcmp(t2->lx, QCL_KWD_IF);
 
         if (t1_else && t2_if) {
-                (void)_qcl_lexer_next(lexer); // else
-                else_ = (_qcl_stmt *)_qcl_parse_stmt_if(lexer);
+                (void)_qcl_lexer_next(parser->l); // else
+                if (!(else_ = (_qcl_stmt *)_qcl_parse_stmt_if(parser))) {
+                        return NULL;
+                }
         } else if (t1_else) {
-                _qcl_lexer_next(lexer); // else
-                else_ = _qcl_parse_stmt(lexer);
+                _qcl_lexer_next(parser->l); // else
+                if (!(else_ = _qcl_parse_stmt(parser))) {
+                        return NULL;
+                }
         }
 
         return _qcl_stmt_if_alloc(e, then, else_);
 }
 
 static _qcl_stmt *
-_qcl_parse_stmt_keyword(_qcl_lexer *lexer)
+_qcl_parse_stmt_keyword(_qcl_parser *parser)
 {
-        _qcl_token *hd = _qcl_lexer_peek(lexer, 0);
+        _qcl_token *hd = _qcl_lexer_peek(parser->l, 0);
 
         if (!strcmp(hd->lx, QCL_KWD_IF)) {
-                return (_qcl_stmt *)_qcl_parse_stmt_if(lexer);
-        } else {
-                assert(0 && "unimplemented");
+                return (_qcl_stmt *)_qcl_parse_stmt_if(parser);
         }
+
+        parser->err.msg = "invalid keyword placement";
+        parser->err.loc = hd->loc;
+
+        return NULL;
 }
 
 static _qcl_stmt_block *
-_qcl_parse_stmt_block(_qcl_lexer *lexer)
+_qcl_parse_stmt_block(_qcl_parser *parser)
 {
         _qcl_stmt_array ar = qcl_array_empty(_qcl_stmt_array);
 
-        (void)_qcl_expect(lexer, _QCL_TT_LCURLY);
-
-        while (_QCL_SP(lexer, 0)->ty != _QCL_TT_RCURLY) {
-                qcl_array_append(ar, _qcl_parse_stmt(lexer));
+        if (!_qcl_expect(parser, _QCL_TT_LCURLY)) {
+                qcl_array_free(ar);
+                return NULL;
         }
 
-        (void)_qcl_expect(lexer, _QCL_TT_RCURLY);
+        while (_QCL_SP(parser->l, 0)->ty != _QCL_TT_RCURLY) {
+                _qcl_stmt *s = _qcl_parse_stmt(parser);
+                if (!s) return NULL;
+                qcl_array_append(ar, s);
+        }
+
+        if (!_qcl_expect(parser, _QCL_TT_RCURLY)) {
+                qcl_array_free(ar);
+                return NULL;
+        }
 
         return _qcl_stmt_block_alloc(ar);
 }
 
 static _qcl_stmt *
-_qcl_parse_stmt(_qcl_lexer *lexer)
+_qcl_parse_stmt(_qcl_parser *parser)
 {
         _qcl_token *hd;
 
-        if (!(hd = _qcl_lexer_peek(lexer, 0))) return NULL;
+        if (!(hd = _qcl_lexer_peek(parser->l, 0))) return NULL;
 
         /* if (hd->ty == _QCL_TT_SEMICOLON) { */
         /*         (void)_qcl_lexer_next(lexer); // '\n' */
@@ -1129,23 +1167,27 @@ _qcl_parse_stmt(_qcl_lexer *lexer)
         /* } */
 
         if (hd->ty == _QCL_TT_KEYWORD) {
-                return _qcl_parse_stmt_keyword(lexer);
+                return _qcl_parse_stmt_keyword(parser);
         } else if (hd->ty == _QCL_TT_IDENTIFIER
-                   && _QCL_SP(lexer, 1)->ty == _QCL_TT_EQUALS) {
-                return (_qcl_stmt *)_qcl_parse_stmt_assignment(lexer);
+                   && _QCL_SP(parser->l, 1)->ty == _QCL_TT_EQUALS) {
+                return (_qcl_stmt *)_qcl_parse_stmt_assignment(parser);
         } else if (hd->ty == _QCL_TT_LCURLY) {
-                return (_qcl_stmt *)_qcl_parse_stmt_block(lexer);
+                return (_qcl_stmt *)_qcl_parse_stmt_block(parser);
         } else {
                 assert(0);
                 //return (_qcl_stmt *)_qcl_parse_stmt_expr(lexer);
         }
 }
 
-static _qcl_program
+static _qcl_parser
 _qcl_create_program(_qcl_lexer *lexer)
 {
-        _qcl_program prog = (_qcl_program) {
-                .stmts = qcl_array_empty(_qcl_stmt_array),
+        _qcl_parser parser = (_qcl_parser) {
+                .l = lexer,
+                .p = (_qcl_program) {
+                        .stmts = qcl_array_empty(_qcl_stmt_array),
+                },
+                .err = {0},
         };
 
         while (_QCL_SP(lexer, 0)->ty != _QCL_TT_EOF) {
@@ -1153,12 +1195,12 @@ _qcl_create_program(_qcl_lexer *lexer)
                         _qcl_lexer_next(lexer);
                         continue;
                 }
-                _qcl_stmt *stmt = _qcl_parse_stmt(lexer);
+                _qcl_stmt *stmt = _qcl_parse_stmt(&parser);
                 if (!stmt) break;
-                qcl_array_append(prog.stmts, stmt);
+                qcl_array_append(parser.p.stmts, stmt);
         }
 
-        return prog;
+        return parser;
 }
 
 // ######################
@@ -1611,6 +1653,7 @@ _qcl_interpret(_qcl_program *p)
 
 typedef struct {
         _qcl_interpret_context interpreter;
+        _qcl_err err;
 } qcl_config;
 
 static qcl_config
@@ -1618,15 +1661,24 @@ qcl_parse_file(const char *fp)
 {
         char         *src;
         _qcl_lexer    lexer;
-        _qcl_program  prog;
+        _qcl_parser   parser;
+        qcl_config    config;
 
-        assert(src = _qcl_load_file(fp));
-        lexer = _qcl_lex_file(fp, src);
-        prog  = _qcl_create_program(&lexer);
+        if (!(src = _qcl_load_file(fp))) {
+                config.err.loc = (_qcl_loc) {0};
+                config.err.msg = "failed to load file";
+                return config;
+        }
 
-        return (qcl_config) {
-                .interpreter = _qcl_interpret(&prog),
-        };
+        if ((lexer = _qcl_lex_file(fp, src)).err.msg) {
+                config.err = lexer.err;
+                return config;
+        }
+
+        parser  = _qcl_create_program(&lexer);
+        config.interpreter = _qcl_interpret(&parser.p);
+
+        return config;
 }
 
 static qcl_value *
