@@ -1174,8 +1174,9 @@ _qcl_parse_stmt(_qcl_parser *parser)
         } else if (hd->ty == _QCL_TT_LCURLY) {
                 return (_qcl_stmt *)_qcl_parse_stmt_block(parser);
         } else {
-                assert(0);
-                //return (_qcl_stmt *)_qcl_parse_stmt_expr(lexer);
+                parser->err.loc = hd->loc;
+                parser->err.msg = "invalid statement";
+                return NULL;
         }
 }
 
@@ -1662,7 +1663,13 @@ qcl_parse_file(const char *fp)
         char         *src;
         _qcl_lexer    lexer;
         _qcl_parser   parser;
-        qcl_config    config;
+        qcl_config    config = (qcl_config) {
+                .interpreter = {0},
+                .err = (_qcl_err) {
+                        .msg = NULL,
+                        .loc = (_qcl_loc) {0},
+                },
+        };
 
         if (!(src = _qcl_load_file(fp))) {
                 config.err.loc = (_qcl_loc) {0};
@@ -1675,10 +1682,41 @@ qcl_parse_file(const char *fp)
                 return config;
         }
 
-        parser  = _qcl_create_program(&lexer);
+        if ((parser = _qcl_create_program(&lexer)).err.msg) {
+                config.err = parser.err;
+                return config;
+        }
+
         config.interpreter = _qcl_interpret(&parser.p);
 
         return config;
+}
+
+static int
+qcl_ok(const qcl_config *config)
+{
+        return config->err.msg != NULL;
+}
+
+static const char *
+qcl_geterr(const qcl_config *config)
+{
+        static char buf[512];
+        size_t c;
+        size_t r;
+        const char *fp;
+        const char *msg;
+
+        memset(buf, 0, sizeof(buf));
+
+        c   = config->err.loc.c;
+        r   = config->err.loc.r;
+        fp  = config->err.loc.fp;
+        msg = config->err.msg;
+
+        sprintf(buf, "%s:%zu:%zu: %s", fp, r, c, msg);
+
+        return buf;
 }
 
 static qcl_value *

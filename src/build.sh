@@ -7,3 +7,5 @@ echo '#define QCL_IMPL
 int main(void) {
 return 0;
 }' | cc -x c - -o main -ggdb -O0
+
+cc -o main main.c
