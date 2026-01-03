@@ -1,1 +1,4 @@
-lst = "hello" + "world" + "foo";
+lst = "hello";
+(b = true
+
+if b { lst = "world"; }

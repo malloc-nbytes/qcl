@@ -554,15 +554,22 @@ _qcl_lex_file(const char *fp,
                         i += len+2, c += len+2;
                 } else {
                         size_t len     = _qcl_consume_while(src+i, _qcl_issym);
-                        size_t old_len = len;
+                        //size_t old_len = len;
                         _qcl_tt ty     = _QCL_TT_NONE;
                         len            = _qcl_determine_sym(src+i, len, &ty, &symmap);
                         if (ty == _QCL_TT_NONE) {
                                 // TODO: put error in error struct of lexer.
-                                char buf[256] = {0};
-                                strncpy(buf, src+i, old_len);
-                                printf("error: unknown symbol: %s\n", buf);
-                                exit(1);
+                                /* char buf[256] = {0}; */
+                                /* strncpy(buf, src+i, old_len); */
+                                /* printf("error: unknown symbol: %s\n", buf); */
+                                /* exit(1); */
+                                lexer.err.msg = "invalid symbol";
+                                lexer.err.loc = (_qcl_loc) {
+                                        .r = r,
+                                        .c = c,
+                                        .fp = lexer.fp,
+                                };
+                                return lexer;
                         }
                         _qcl_token *t = _qcl_token_alloc(src+i, len,
                                                          ty, r, c, lexer.fp,
@@ -1547,8 +1554,6 @@ static void *
 _qcl_interpret_visit_expr_list(_qcl_visitor   *v,
                                _qcl_expr_list *e)
 {
-        _qcl_interpret_context *ctx = (_qcl_interpret_context *)v->context;
-
         qcl_value_array values = qcl_array_empty(qcl_value_array);
 
         for (size_t i = 0; i < e->exprs.len; ++i) {
@@ -1663,7 +1668,9 @@ qcl_parse_file(const char *fp)
         char         *src;
         _qcl_lexer    lexer;
         _qcl_parser   parser;
-        qcl_config    config = (qcl_config) {
+        qcl_config    config;
+
+        config = (qcl_config) {
                 .interpreter = {0},
                 .err = (_qcl_err) {
                         .msg = NULL,
@@ -1684,7 +1691,7 @@ qcl_parse_file(const char *fp)
 
         if ((parser = _qcl_create_program(&lexer)).err.msg) {
                 config.err = parser.err;
-                return config;
+                //return config;
         }
 
         config.interpreter = _qcl_interpret(&parser.p);
@@ -1695,7 +1702,7 @@ qcl_parse_file(const char *fp)
 static int
 qcl_ok(const qcl_config *config)
 {
-        return config->err.msg != NULL;
+        return config->err.msg == NULL;
 }
 
 static const char *
