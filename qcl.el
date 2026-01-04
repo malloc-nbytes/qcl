@@ -1,3 +1,5 @@
+;; Syntax highlighting for Emacs qcl mode
+
 ;; Qcl mode
 (defconst qcl-mode-syntax-table
   (with-syntax-table (copy-syntax-table)

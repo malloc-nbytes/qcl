@@ -28,6 +28,51 @@
  *
  * TODO:
  *   Impl map_destroy() to map macro code gen.
+ *
+ * Available interface:
+ *
+ * FUNCTIONS
+ *
+ *  qcl_config qcl_parse_file(const char *fp)
+ *
+ *    Get a configuration object. This should be the first function
+ *    you call to parse a file.
+ *
+ *  int qcl_ok(const qcl_config *config)
+ *
+ *    Returns 0 if any errors were found and 1 if ok.
+ *
+ *  char *qcl_geterr(const qcl_config *config)
+ *
+ *    Get a nice error message from the `config` error information.
+ *
+ *  qcl_value *qcl_value_get(qcl_config *config, const char *var)
+ *
+ *    Query a value that is found in the configuration file. It will be
+ *    one of the VALUES or NULL if it is not defined.
+ *
+ *  char **qcl_value_flatten(qcl_config *config, const char *var)
+ *
+ *    Flatten a variable into an array of values. This is useful for
+ *    if you do not know whether the variable is a list or not, as this
+ *    forces all values to be flattened into an iterable array.
+ *    NOTE:
+ *      The caller of this function is responsible
+ *      for performing free(ar[0 .. ar.len-1]) and free(ar).
+ *      It is guaranteed that the array will always be
+ *      at least 1 in length and the last element in the
+ *      array will be NULL.
+ *
+ * STRUCTS
+ *
+ *  qcl_config
+ *
+ *    A qcl configuration object. This acts as a 'context'. To query a file,
+ *    you need to have this object.
+ *
+ *  VALUES
+ *
+ *    TODO
  */
 
 #ifndef QCL_INCLUDED_H
