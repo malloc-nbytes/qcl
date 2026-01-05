@@ -63,6 +63,10 @@
  *      at least 1 in length and the last element in the
  *      array will be NULL.
  *
+ * void qcl_add_value(qcl_config *config, const char *id, qcl_value  *value)
+ *
+ *   Add a new variable in-memory.
+ *
  * STRUCTS
  *
  *  qcl_config
@@ -1820,6 +1824,14 @@ qcl_value_flatten(qcl_config *config,
  done:
         qcl_array_append(ar, NULL);
         return ar.data;
+}
+
+static void
+qcl_add_value(qcl_config *config,
+              const char *id,
+              qcl_value  *value)
+{
+        symtbl_insert(&config->interpreter.tbl, id, value);
 }
 
 #endif // QCL_IMPL
